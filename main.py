@@ -12,9 +12,12 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from core.database import ScoreDB
+from core.event_player import EventPlayer
+from core.keyboard_driver import KeyboardDriver
 from core.keymap import KeyMap
 from core.play_logger import PlayLogger
 from core.player import Player
+from core.profile import ensure_profiles, load_profiles, resolve_profile
 from core.recognizer import StubRecognizer, get_recognizer_from_provider
 from core.settings_store import SettingsStore
 from gui.main_window import MainWindow
@@ -78,12 +81,28 @@ def main():
     player_cfg = cfg.get("player", {})
     db = ScoreDB(os.path.join(data_dir, app_cfg.get("db_file", "scores.db")))
     keymap = KeyMap(cfg["keymap"])
+    # 游戏档位:profiles/ 目录优先,缺失时用 config.yaml 的 keymap 合成默认档位
+    profiles = load_profiles(ensure_profiles("."), fallback_keymap=cfg.get("keymap"))
+    profile = resolve_profile(profiles, app_cfg.get("active_profile"))
     settings_store = SettingsStore(os.path.join(data_dir, "settings.json"))
     provider = settings_store.get_active()
     recognizer = get_recognizer_from_provider(provider) if provider else StubRecognizer()
+    # 修饰键与音键的间隔:配置缺失时回落到驱动默认值
+    driver = KeyboardDriver(
+        settle_ms=float(player_cfg.get("modifier_settle_ms", KeyboardDriver.DEFAULT_SETTLE_MS)),
+        release_settle_ms=float(
+            player_cfg.get("modifier_release_ms", KeyboardDriver.DEFAULT_RELEASE_SETTLE_MS)
+        ),
+    )
     player = Player(
         keymap,
+        driver=driver,
         logger=PlayLogger(os.path.join(data_dir, "logs")),
+        latency_compensation_ms=float(player_cfg.get("latency_compensation_ms", 0)),
+    )
+    # 事件演奏器(M4):三角洲档位走编译器 + EventPlayer,与默认 Player 共用同一驱动
+    event_player = EventPlayer(
+        driver=driver,
         latency_compensation_ms=float(player_cfg.get("latency_compensation_ms", 0)),
     )
     # 进程退出兜底:任何退出路径(atexit)都停止演奏并释放全部按键,防止键卡死
@@ -105,7 +124,9 @@ def main():
     icon_path = resource_path("app.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
-    win = MainWindow(cfg, db, keymap, recognizer, player, settings_store, config_path=config_path)
+    win = MainWindow(cfg, db, keymap, recognizer, player, settings_store,
+                     config_path=config_path, profile=profile, profiles=profiles,
+                     event_player=event_player)
     win.show()
     sys.exit(app.exec())
 

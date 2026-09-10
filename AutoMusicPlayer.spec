@@ -52,7 +52,7 @@ a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
-    datas=[("config.yaml", "."), ("app.ico", ".")],
+    datas=[("config.yaml", "."), ("app.ico", "."), ("profiles", "profiles")],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

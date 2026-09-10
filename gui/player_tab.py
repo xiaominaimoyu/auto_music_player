@@ -17,19 +17,80 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core import ir as ir_mod
+from core.compiler import compile_score
+from core.profile import resolve_profile
+from core.scenario import SCENARIOS, get_scenario
 from core.window_monitor import FocusLockPolicy, ForegroundWatcher
 from gui.theme import BRAND, INK_2, INK_3, STATE_INFO
 from gui.widgets import AppDialog
 
 
+def build_event_plan(notes, profile, scenario_id, *, bpm, settle_ms,
+                     release_settle_ms, hold_ratio, gap_ms):
+    """事件路径(三角洲档位):谱面 → (ScenarioPlan, 降级清单)。
+
+    纯函数,不依赖 GUI/游戏/时钟,便于单测。音符层与编译逻辑不 fork——
+    复用 M2 的 IR/编译器与 M3 的档位,差异只由 scenario 收敛到会话层。
+    """
+    scenario = get_scenario(scenario_id)
+    elements = ir_mod.from_storage(notes)
+    params = profile.build_compile_params(
+        bpm=bpm, settle_ms=settle_ms, release_settle_ms=release_settle_ms,
+        hold_ratio=hold_ratio, max_hold_ms=None, gap_ms=gap_ms)
+    params = scenario.apply_intervals(params)
+    result = compile_score(elements, params)
+    return scenario.plan(result.events), result.degradations
+
+
+def _update_active_profile(path: str, profile_id: str):
+    """手术式更新 config.yaml 中 app 段的 active_profile,保留注释与编码。
+
+    与 gui/calibration_dialog.update_player_config_value 同款策略,
+    但作用于 app: 段。
+    """
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    out, in_app, done = [], False, False
+    for line in lines:
+        s = line.rstrip("\n")
+        top = bool(s) and not s[0].isspace()
+        if top:
+            in_app = s.startswith("app:")
+        if in_app and not done and s.strip().startswith("active_profile:"):
+            indent = s[: len(s) - len(s.lstrip())]
+            out.append(f"{indent}active_profile: {profile_id}\n")
+            done = True
+            continue
+        out.append(line)
+    if not done:
+        for idx, line in enumerate(out):
+            if line.rstrip("\n").startswith("app:"):
+                out.insert(idx + 1, f"  active_profile: {profile_id}\n")
+                done = True
+                break
+    if not done:
+        out.append("app:\n")
+        out.append(f"  active_profile: {profile_id}\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(out)
+
+
 class PlayerTab(QWidget):
-    def __init__(self, db, player, player_cfg, config_path=None):
+    def __init__(self, db, player, player_cfg, config_path=None,
+                 profile=None, profiles=None, event_player=None):
         super().__init__()
         self._db = db
         self._player = player
         self._config_path = config_path
+        # 游戏档位(M3):当前激活档位 + 全部候选档位 + 事件演奏器(M4)
+        self._profile = profile
+        self._profiles = list(profiles or [])
+        self._event_player = event_player
         self._hold_ratio = float(player_cfg.get("hold_ratio", 0.75))
         self._gap_ms = float(player_cfg.get("gap_ms", 20))
+        self._settle_ms = float(player_cfg.get("modifier_settle_ms", 30))
+        self._release_settle_ms = float(player_cfg.get("modifier_release_ms", 20))
         self._score_id = None
         self._had_error = False
         self._paused_done = 0
@@ -51,6 +112,13 @@ class PlayerTab(QWidget):
         self._player.finished.connect(self._on_finished)
         self._player.paused.connect(self._on_paused)
         self._player.error_occurred.connect(self._on_error)
+        # 事件演奏器(M4)的信号接到同一组 UI 处理(任意时刻只有一条路径在跑)
+        if self._event_player is not None:
+            self._event_player.progress.connect(self._on_progress)
+            self._event_player.finished.connect(self._on_finished)
+            self._event_player.paused.connect(self._on_paused)
+            self._event_player.aborted.connect(self._on_aborted)
+            self._event_player.error_occurred.connect(self._on_error)
 
     def _card(self, title):
         card = QFrame()
@@ -77,6 +145,31 @@ class PlayerTab(QWidget):
         header.addWidget(self.state_label)
         header.addStretch(1)
         root.addLayout(header)
+
+        # 游戏档位(仅当注入了档位列表时显示)
+        if self._profiles:
+            card, lay = self._card("游戏档位")
+            self.profile_combo = QComboBox()
+            for p in self._profiles:
+                self.profile_combo.addItem(f"{p.group} · {p.name}", p.id)
+            if self._profile is not None:
+                for i in range(self.profile_combo.count()):
+                    if self.profile_combo.itemData(i) == self._profile.id:
+                        self.profile_combo.setCurrentIndex(i)
+                        break
+            self.profile_combo.currentIndexChanged.connect(self._on_profile_change)
+            lay.addWidget(self.profile_combo)
+
+            self.scenario_label = QLabel("场景")
+            self.scenario_label.setObjectName("FieldLabel")
+            lay.addWidget(self.scenario_label)
+            self.scenario_combo = QComboBox()
+            for sid, cls in SCENARIOS.items():
+                self.scenario_combo.addItem(getattr(cls, "name", sid), sid)
+            lay.addWidget(self.scenario_combo)
+            # 场景下拉仅在事件路径(三角洲档位)时可见
+            self._update_scenario_visibility()
+            root.addWidget(card)
 
         # 选择乐谱
         card, lay = self._card("选择乐谱")
@@ -260,6 +353,62 @@ class PlayerTab(QWidget):
         self._countdown_timer.timeout.connect(self._countdown_tick)
         self._countdown_timer.start(1000)
 
+    # ---------- 档位与事件路径(M3/M4/M5) ----------
+
+    def _use_event_path(self) -> bool:
+        """是否走事件演奏路径(三角洲档位)。
+
+        判据:有事件演奏器 + 当前档位存在 + 该档位没有 21 键旧模型
+        (legacy_keymap 为空 → 只能走编译器 + EventPlayer;默认档位走旧 Player)。
+        """
+        return (self._event_player is not None and self._profile is not None
+                and self._profile.legacy_keymap is None)
+
+    def _update_scenario_visibility(self):
+        vis = self._use_event_path()
+        self.scenario_label.setVisible(vis)
+        self.scenario_combo.setVisible(vis)
+
+    def _on_profile_change(self, index):
+        pid = self.profile_combo.itemData(index)
+        if pid is None:
+            return
+        self._profile = resolve_profile(self._profiles, pid)
+        if self._config_path:
+            try:
+                _update_active_profile(self._config_path, self._profile.id)
+            except Exception as e:
+                self.progress_state.setText(f"档位已切换(写回配置失败: {e})")
+        self._update_scenario_visibility()
+
+    def _play_event(self, notes, bpm, start_index, score_name):
+        plan, degradations = build_event_plan(
+            notes, self._profile, self.scenario_combo.currentData() or "free_play",
+            bpm=bpm, settle_ms=self._settle_ms,
+            release_settle_ms=self._release_settle_ms,
+            hold_ratio=self._hold_ratio, gap_ms=self._gap_ms)
+        self._event_player.play(plan.events, plan.interrupt_mode,
+                                start_index=start_index, score_name=score_name)
+        n = len(degradations)
+        suffix = f" · 已降级 {n} 处" if n else ""
+        self.state_label.setText(f"演奏中 BPM {bpm} · {self._profile.name}")
+        self.progress_state.setText(f"演奏中...{suffix}")
+
+    def _on_aborted(self, reason):
+        """中止(S2):进度清空,不可续播。"""
+        self._focus_timer.stop()
+        self._paused_done = 0
+        self._paused_total = 0
+        self.play_btn.setEnabled(True)
+        self.play_btn.setText("开始演奏")
+        self.stop_btn.setEnabled(False)
+        self.reset_btn.setEnabled(False)
+        self.state_label.setText("已中止")
+        self.progress_state.setText(reason or "演奏已中止")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.pos_label.setText("0 / 0")
+
     def _countdown_tick(self):
         self._countdown_left -= 1
         if self._countdown_left > 0:
@@ -268,9 +417,13 @@ class PlayerTab(QWidget):
         self._countdown_timer.stop()
         notes, bpm, start_index, score_name = self._pending
         self._start_focus_watch()
-        self._player.play(notes, bpm, self._hold_ratio, self._gap_ms, start_index=start_index, score_name=score_name)
-        self.state_label.setText(f"演奏中 BPM {bpm}")
-        self.progress_state.setText("演奏中...")
+        if self._use_event_path():
+            self._play_event(notes, bpm, start_index, score_name)
+        else:
+            self._player.play(notes, bpm, self._hold_ratio, self._gap_ms,
+                              start_index=start_index, score_name=score_name)
+            self.state_label.setText(f"演奏中 BPM {bpm}")
+            self.progress_state.setText("演奏中...")
 
     def _stop(self):
         timer = getattr(self, "_countdown_timer", None)

@@ -172,12 +172,18 @@ class TitleBar(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg, db, keymap, recognizer, player, settings_store, config_path=None):
+    def __init__(self, cfg, db, keymap, recognizer, player, settings_store, config_path=None,
+                 profile=None, profiles=None, event_player=None):
         super().__init__()
         self._cfg = cfg
         self._player = player
         self._settings_store = settings_store
         self._config_path = config_path
+        # 游戏档位(M3 起由 main.py 注入):当前激活档位与全部候选档位。
+        # M4 在演奏控制页消费它们(档位下拉 + 按档位组装 CompileParams)。
+        self._profile = profile
+        self._profiles = list(profiles or [])
+        self._event_player = event_player
         self._drag_pos = None
         self._is_maximized = False
         self._normal_geometry = None
@@ -200,7 +206,9 @@ class MainWindow(QMainWindow):
             advisor_fn=lambda: (self._cfg.get("advisor") or {}, self._settings_store.get_active()),
         )
         self.library_tab = LibraryTab(db)
-        self.player_tab = PlayerTab(db, player, cfg.get("player", {}), config_path=config_path)
+        self.player_tab = PlayerTab(db, player, cfg.get("player", {}), config_path=config_path,
+                                    profile=self._profile, profiles=self._profiles,
+                                    event_player=self._event_player)
         self.settings_tab = SettingsTab(settings_store)
 
         self._build_ui()

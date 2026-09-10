@@ -1,6 +1,10 @@
 app:
   data_dir: data
   db_file: scores.db
+  # 当前激活的游戏档位(profiles/ 目录下的档位 id)
+  # 切换档位即切换输入模型;鸣潮/原神 与 三角洲行动 分属不同分区,互不影响
+  # 可选值见 profiles/*.yaml;填错或缺失时回落到 default
+  active_profile: default
 
 recognizer:
   # provider: stub | openai_compatible
@@ -35,6 +39,12 @@ player:
   hold_ratio: 0.75
   # 相邻音符之间的额外间隔(毫秒)
   gap_ms: 20
+  # 鼠标修饰键按下 → 音符键按下 的间隔(毫秒)
+  # 仅对「音位键 + 鼠标修饰态」输入模型的游戏生效(如三角洲行动口琴);
+  # 过短时游戏可能尚未注册修饰态,会把高/低音弹成中音,实机可据此上调校准
+  modifier_settle_ms: 30
+  # 音符键松开 → 鼠标修饰键松开 的间隔(毫秒)
+  modifier_release_ms: 20
   # 全局紧急停止热键
   stop_hotkey: F8
   # 系统输出延迟补偿(毫秒,延迟校准向导写入;0 = 不补偿)

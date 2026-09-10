@@ -1,0 +1,46 @@
+# 默认档位:鸣潮 / 原神
+#
+# 输入模型:21 个独立键(高/中/低 3 行 × 7),不使用鼠标修饰键。
+# 在新编译器里表达为「全部走物理直达键」,与旧 KeyMap 行为完全等价。
+#
+# ⚠️ 本文件是老用户的兼容基线:若 profiles/ 目录缺失,
+#    程序会用 config.yaml 的 keymap 段合成同一个档位。
+
+id: default
+name: 默认(鸣潮 / 原神)
+group: 默认
+
+# 新模型:所有音高都有物理直达键,故 pitch_keys 实际不会被用到
+pitch_keys: [Z, X, C, V, B, N, M]
+
+# 不使用鼠标修饰键
+modifier_buttons: {}
+
+pitch_direct_overrides:
+  high_1: Q
+  high_2: W
+  high_3: E
+  high_4: R
+  high_5: T
+  high_6: Y
+  high_7: U
+  mid_1: A
+  mid_2: S
+  mid_3: D
+  mid_4: F
+  mid_5: G
+  mid_6: H
+  mid_7: J
+  low_1: Z
+  low_2: X
+  low_3: C
+  low_4: V
+  low_5: B
+  low_6: N
+  low_7: M
+
+# 旧 21 键模型(供尚未迁移到编译器的模块使用)
+legacy_keymap:
+  high: [Q, W, E, R, T, Y, U]
+  mid: [A, S, D, F, G, H, J]
+  low: [Z, X, C, V, B, N, M]
