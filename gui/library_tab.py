@@ -106,6 +106,7 @@ class LibraryTab(QWidget):
                 "图片" if src == "image"
                 else "文档" if src == "document"
                 else "导入" if src == "import"
+                else "手动" if src == "manual"
                 else "-"
             )
             src_item.setForeground(QColor(STATE_INFO if src == "image" else STATE_SUCCESS))

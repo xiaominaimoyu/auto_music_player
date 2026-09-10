@@ -126,6 +126,11 @@ fun UploadScreen(container: AppContainer) {
         Card(colors = CardDefaults.cardColors(containerColor = com.automusic.player.ui.theme.Surface1)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("第 2 步 · 大模型识别", color = Brand, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "在线识别需先在「设置」页配置模型;无模型时可点「复制提示词」,把提示词和乐谱图片发给任意外部 AI 工具(如 ChatGPT / 豆包 / Kimi),再把返回的简谱粘贴到下方结果框直接校对入库。",
+                    color = Ink2,
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Button(
                         enabled = !busy && imageUri != null,
@@ -150,6 +155,7 @@ fun UploadScreen(container: AppContainer) {
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Bg),
                     ) { Text(if (busy) "识别中..." else "开始识别") }
+                    OutlinedButton(onClick = { copyPromptToClipboard(context) }) { Text("复制提示词") }
                     if (busy) CircularProgressIndicator(Modifier.height(24.dp))
                 }
                 if (error != null) {
@@ -167,7 +173,7 @@ fun UploadScreen(container: AppContainer) {
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 4,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                    placeholder = { Text("识别结果(规范化简谱)", color = Ink3) },
+                    placeholder = { Text("识别结果(规范化简谱);外部 AI 工具识别的简谱可直接粘贴到这里", color = Ink3) },
                 )
                 val notes = remember(resultText) { JianpuParser.parse(resultText) }
                 if (notes.isNotEmpty()) {
@@ -227,6 +233,17 @@ fun UploadScreen(container: AppContainer) {
             },
         )
     }
+}
+
+/** 复制识别提示词到剪贴板,供任意外部 AI 工具识别乐谱图片,免配置 API Key。 */
+private fun copyPromptToClipboard(context: android.content.Context) {
+    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+    clipboard?.setPrimaryClip(
+        android.content.ClipData.newPlainText("简谱识别提示词", Prompt.JIANPU_PROMPT)
+    )
+    android.widget.Toast.makeText(
+        context, "提示词已复制:粘贴到外部 AI 工具并附上乐谱图片", android.widget.Toast.LENGTH_LONG
+    ).show()
 }
 
 /** 预览解码:粗降采样到最长边约 1024,避免大图 OOM。 */

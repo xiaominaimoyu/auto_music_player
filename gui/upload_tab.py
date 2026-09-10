@@ -7,6 +7,7 @@ import time
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.parser import parse_jianpu
+from core.recognizer import JIANPU_PROMPT
 from core.score_model import validate_notes
 from gui.theme import BRAND, BRAND_SOFT, LINE_2, SURFACE_2, STATE_ERROR
 from gui.widgets import AppDialog, BottomResizableCard
@@ -203,9 +205,9 @@ class UploadTab(QWidget):
         lay.addLayout(file_row)
         inner_layout.addWidget(card)
 
-        # 步骤2:识别与解析
+        # 步骤2:识别与解析(两条途径:内置模型在线识别;或外部 AI 工具识别后粘贴简谱)
         card, lay = self._card()
-        lay.addLayout(_step_row("2", "识别与解析", "识别乐谱文本 · 解析为校对表格"))
+        lay.addLayout(_step_row("2", "识别与解析", "在线识别需模型设置 · 无模型时点「复制提示词」交给任意外部 AI 工具识别,把简谱粘贴到下方识别结果直接解析"))
         btn_row = QHBoxLayout()
         self.recognize_btn = QPushButton("开始识别")
         self.recognize_btn.setObjectName("BtnPrimary")
@@ -213,10 +215,14 @@ class UploadTab(QWidget):
         self.recognize_btn.clicked.connect(self._recognize)
         self.parse_btn = QPushButton("解析到校对表格")
         self.parse_btn.setObjectName("BtnSecondary")
-        self.parse_btn.setEnabled(False)
         self.parse_btn.clicked.connect(self._parse)
         btn_row.addWidget(self.recognize_btn)
         btn_row.addWidget(self.parse_btn)
+        self.copy_prompt_btn = QPushButton("复制提示词")
+        self.copy_prompt_btn.setObjectName("BtnSecondary")
+        self.copy_prompt_btn.setToolTip("把简谱识别提示词复制到剪贴板:粘贴到任意外部 AI 工具并附上乐谱图片,即可得到本程序可解析的简谱文本")
+        self.copy_prompt_btn.clicked.connect(self._copy_prompt)
+        btn_row.addWidget(self.copy_prompt_btn)
         self.advisor_btn = QPushButton("AI 编谱建议")
         self.advisor_btn.setObjectName("BtnSecondary")
         self.advisor_btn.setToolTip("实验性:输入旋律描述或简谱片段,生成符合 21 键的编谱建议(需在模型设置页配置供应商)")
@@ -229,9 +235,9 @@ class UploadTab(QWidget):
         # 步骤3:识别结果(底部边缘可拖高,总滚动条随高度同步)
         card3, lay3 = self._card(resizable=True)
         card3.setup(height=200, min_height=160)
-        lay3.addLayout(_step_row("3", "识别结果", "可手动修改,修改后重新\"解析到校对表格\""))
+        lay3.addLayout(_step_row("3", "识别结果", "外部 AI 工具识别的简谱可直接粘贴到这里 · 可手动修改,修改后重新\"解析到校对表格\""))
         self.raw_text = QPlainTextEdit()
-        self.raw_text.setPlaceholderText("识别结果将显示在这里...")
+        self.raw_text.setPlaceholderText("识别结果将显示在这里;也可把外部 AI 工具识别出的简谱直接粘贴到此处,点击\"解析到校对表格\"...")
         self.raw_text.setCursor(Qt.CursorShape.IBeamCursor)
         lay3.addWidget(self.raw_text, 1)
         self._fix_card_cursors(card3)
@@ -315,7 +321,6 @@ class UploadTab(QWidget):
         ext = os.path.splitext(path)[1].lower()
         self._source_type = "image" if ext in _IMAGE_EXTS else "document"
         self.recognize_btn.setEnabled(True)
-        self.parse_btn.setEnabled(False)
         self.raw_text.clear()
 
     def _recognize(self):
@@ -348,8 +353,18 @@ class UploadTab(QWidget):
     def _fill_from_advisor(self, text: str):
         """确认后的简谱填入识别结果框,走既有解析/校对/保存流程(用户确认后才入库)。"""
         self.raw_text.setPlainText(text)
-        self.parse_btn.setEnabled(True)
         AppDialog.show_info(self, "已填入", "编谱建议已填入识别结果,请点击「解析到校对表格」继续校对与保存。")
+
+    def _copy_prompt(self):
+        """把规范化简谱提示词复制到剪贴板,供任意外部 AI 工具识别乐谱图片,免 API Key。"""
+        QApplication.clipboard().setText(JIANPU_PROMPT)
+        AppDialog.show_info(
+            self, "提示词已复制",
+            "已复制到剪贴板。\n\n使用方法:\n"
+            "1. 粘贴到任意外部 AI 工具(如 ChatGPT / 豆包 / Kimi 网页版)\n"
+            "2. 附上乐谱图片一起发送\n"
+            "3. 把返回的简谱粘贴到「识别结果」,点击「解析到校对表格」即可校对入库",
+        )
 
     def _recognize_worker(self, path, source_type):
         try:
@@ -363,7 +378,6 @@ class UploadTab(QWidget):
 
     def _on_recognized(self, text: str):
         self.raw_text.setPlainText(text)
-        self.parse_btn.setEnabled(True)
         self.recognize_btn.setEnabled(True)
         self.recognize_btn.setText("重新识别")
 
@@ -449,7 +463,7 @@ class UploadTab(QWidget):
             notes=notes,
             raw_text=self.raw_text.toPlainText(),
             source_file=source_file,
-            source_type=self._source_type,
+            source_type=self._source_type or "manual",
             bpm_default=self.bpm_spin.value(),
         )
         AppDialog.show_success(self, "成功", f"《{name}》已保存到乐谱库")
