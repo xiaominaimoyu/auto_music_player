@@ -30,6 +30,18 @@ def run():
     for dtype in ("success", "info", "warning", "error", "confirm"):
         dlg = AppDialog(win, dtype, "冒烟测试", "组件构建验证", [("知道了", "primary")])
         dlg.deleteLater()
+    # 风险警示对话框冒烟:常量非空 + 可构造可布局不崩溃
+    from gui.disclaimer import (
+        BTN_CONTINUE_TEXT,
+        BTN_QUIT_TEXT,
+        DISCLAIMER_BODY,
+        DISCLAIMER_TITLE,
+        RiskDisclaimerDialog,
+    )
+
+    assert DISCLAIMER_TITLE and DISCLAIMER_BODY and BTN_CONTINUE_TEXT and BTN_QUIT_TEXT
+    disclaimer = RiskDisclaimerDialog()
+    disclaimer.deleteLater()
     QTimer.singleShot(1500, app.quit)
     rc = app.exec()
     db.conn.close()

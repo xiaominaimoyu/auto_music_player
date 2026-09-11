@@ -19,6 +19,7 @@ from core.keymap import KeyMap
 from core.play_logger import PlayLogger
 from core.player import Player
 from core.profile import ensure_profiles, load_profiles, resolve_profile
+from gui.disclaimer import confirm_risk_disclaimer
 from gui.main_window import MainWindow
 from gui.theme import APP_QSS
 
@@ -141,6 +142,16 @@ def main():
     icon_path = resource_path("app.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
+
+    # 风险警示关卡:启动后、主界面前的强制模态确认;异常=安全终止而非跳过
+    try:
+        confirmed = confirm_risk_disclaimer()
+    except Exception as e:
+        print(f"风险警示界面异常,程序终止: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not confirmed:
+        sys.exit(0)  # atexit 兜底自动释放虚拟按键后正常退出
+
     win = MainWindow(
         cfg,
         db,
