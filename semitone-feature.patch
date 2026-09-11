@@ -1,0 +1,492 @@
+diff --git a/core/parser.py b/core/parser.py
+--- a/core/parser.py
++++ b/core/parser.py
+@@ -2,13 +2,14 @@
+ 
+ 输出协议(与大模型 prompt 一致):
+ - 音高:1-7 中音;数字+' 高音;数字+, 低音;0 休止
++- 半音:数字后加 # 表示升半音(如 1# / 1'# / 1,#),落在该项的可选字段 semitone=1
+ - 时值:无后缀=四分音符(1拍);_ = 八分(0.5拍), __ = 十六分(0.25拍);
+   - = 二分(2拍), -- = 全音符(4拍);附点用 . 或 · 跟在时值符号后,时值 ×1.5
+ - 和弦:[音1 音2 ...]时值后缀,如 [1' 3' 5']- ;和弦内部只写音高
+ - 小节线 | ‖ 、调号行(1=C)、歌词行自动忽略
+ 
+-输出: [{ "notes": ["high_1"], "dur": 0.5 }, ...]
+-dur 单位为拍;休止符 notes 为空列表。
++输出: [{ "notes": ["high_1"], "dur": 0.5 }, {"notes": ["mid_3"], "dur": 1.0, "semitone": 1}, ...]
++dur 单位为拍;休止符 notes 为空列表;semitone 仅在升半音时出现(缺省 0)。
+ 
+ 两种模式:
+ - 宽容模式(默认):无效记号静默跳过,与历史行为一致
+@@ -21,8 +22,9 @@
+ from dataclasses import dataclass
+ 
+ _PITCH_SUFFIX = {"'": "high", ",": "low"}
++_SHARP_MARK = "#"      # 升半音标记,紧跟音高(如 1# / 1'# / 1,#)
+ _CHORD_RE = re.compile(r"[\[\(]([^\]\)]+)[\]\)]([_\-.·]*)")
+-_NOTE_RE = re.compile(r"[0-7](?:'|,|\.|·|_|-)*")
++_NOTE_RE = re.compile(r"[0-7](?:'|,|\.|·|_|-|#)*")
+ _TUNE_LINE_RE = re.compile(r"^\s*1\s*=\s*[A-Ga-g]")
+ _CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
+ 
+@@ -38,8 +40,13 @@
+ 
+ 
+ def _split_pitch_dur(suffix: str):
+-    """把数字后的修饰符串拆成(音高, 时值部分)。"""
++    """把数字后的修饰符串拆成 (音高, 半音, 时值部分)。
++
++    `#` 可出现在音高记号之后任意位置(1# / 1'# / 1,#),一律视为升半音并从
++    时值串中摘除——时值符号只认 _ - . ·。
++    """
+     pitch = "mid"
++    semitone = 0
+     rest = suffix
+     if rest.startswith(("'", ",")):
+         pitch = _PITCH_SUFFIX[rest[0]]
+@@ -52,7 +59,10 @@
+         if len(rest) == 1 or rest[1] not in "_-.·":
+             pitch = "low"
+             rest = rest[1:]
+-    return pitch, rest
++    if _SHARP_MARK in rest:
++        semitone = 1
++        rest = rest.replace(_SHARP_MARK, "")
++    return pitch, semitone, rest
+ 
+ 
+ def _parse_dur(rest: str) -> float:
+@@ -77,21 +87,29 @@
+ def _build_single(token: str):
+     """返回 (音符, 问题)。0 一律为休止;休止带八度记号记为问题,不影响输出。"""
+     num = int(token[0])
+-    pitch, rest = _split_pitch_dur(token[1:])
++    pitch, semitone, rest = _split_pitch_dur(token[1:])
+     dur = _parse_dur(rest)
+     problem = None
+     if num == 0:
+         if token[1:2] in ("'", ","):
+             problem = "休止符 0 不应带八度记号"
+         return {"notes": [], "dur": dur}, problem
+-    return {"notes": [_note_id(num, pitch)], "dur": dur}, problem
++    item = {"notes": [_note_id(num, pitch)], "dur": dur}
++    if semitone:
++        item["semitone"] = 1
++    return item, problem
+ 
+ 
+ def _build_chord(inner: str, suffix: str):
+-    """返回 (和弦, 无效内部记号列表);空和弦由调用方丢弃。"""
++    """返回 (和弦, 无效内部记号列表);空和弦由调用方丢弃。
++
++    和弦内任一音带 `#` 即把整个和弦标为半音——三角洲档位不支持和弦时降级为
++    首音,半音标记因此必须落在和弦所在项上才不丢信息。
++    """
+     dur = _parse_dur(suffix)
+     note_ids = []
+     invalid = []
++    semitone = 0
+     for part in re.split(r"[,\s]+", inner.strip()):
+         if not part:
+             continue
+@@ -104,9 +122,13 @@
+         if num == 0 or not 1 <= num <= 7:
+             invalid.append(part)
+             continue
+-        pitch, _ = _split_pitch_dur(token[1:])
++        pitch, semi, _ = _split_pitch_dur(token[1:])
++        semitone = semitone or semi
+         note_ids.append(_note_id(num, pitch))
+-    return {"notes": note_ids, "dur": dur}, invalid
++    item = {"notes": note_ids, "dur": dur}
++    if semitone and note_ids:
++        item["semitone"] = 1
++    return item, invalid
+ 
+ 
+ def _is_lyric_line(line: str) -> bool:
+diff --git a/core/ir.py b/core/ir.py
+--- a/core/ir.py
++++ b/core/ir.py
+@@ -2,11 +2,17 @@
+ 
+ 与持久层 `note_id` 的分工(决策 D1「schema 冻结、内部 IR 不冻结」):
+ 
+-    持久层  "high|mid|low_1~7"   与安卓端共享,冻结不动,semitone 不落盘
++    持久层  "high|mid|low_1~7"   与安卓端共享,冻结不动
+     本 IR   pitch + octave + semitone 三个独立维度,semitone 从第一天就存在
+ 
+-这样 V2 放开持久层正则时,只需改 `from_storage` / `to_storage` 两处,
+-编译器与 Player 一行不动——避免同时改 schema + 编译器 + Player 三层。
++半音**绝不写进 note_id**(note_id 永远是 "mid_1" 这种形态),而是由存储项的
++**可选第三个字段** `semitone` 承载:
++
++    [{"notes": ["mid_1"], "dur": 1.0, "semitone": 1}, ...]
++
++这样安卓端与旧库(无该字段)完全不受影响:`score_model.validate_notes` 只校验
++notes/dur、忽略额外字段,旧数据缺省 semitone=0。D1 的"schema 冻结"得以保持,
++且 `from_storage` 支持显式 `semitones` 序列(与 items 等长)作为等价注入通道。
+ """
+ 
+ from dataclasses import dataclass
+@@ -90,12 +96,24 @@
+     return IRNote(pitch=pitch, octave=NAME_TO_OCTAVE[name], semitone=semitone, dur=dur)
+ 
+ 
++def _item_semitone(item: dict) -> int:
++    """读取存储项的可选半音字段;缺省 0(旧数据与安卓端不受影响)。"""
++    v = item.get("semitone", 0)
++    if isinstance(v, bool) or not isinstance(v, int):
++        raise ValueError(f"semitone 必须是 0/1 整数: {v!r}")
++    if v not in (0, 1):
++        raise ValueError(f"semitone 必须是 0/1: {v!r}")
++    return v
++
++
+ def from_storage(items: Sequence[dict], semitones: Iterable[int] | None = None) -> list:
+     """存储格式 → IR。
+ 
+-    items     [{"notes": ["mid_1", ...], "dur": 拍数}, ...],空 notes 为休止
+-    semitones 与 items 等长的 0/1 半音提示(D8 注入通道)。
+-              None 表示全部为自然音;长度不一致直接报错——绝不静默错位回填。
++    items     [{"notes": ["mid_1", ...], "dur": 拍数, "semitone": 0|1(可选)}, ...],
++              空 notes 为休止
++    semitones 与 items 等长的 0/1 半音提示(D8 注入通道);给了就以它为准,
++              None 表示改用每一项的 `semitone` 字段(缺省 0)。
++              长度不一致直接报错——绝不静默错位回填。
+     """
+     if semitones is not None:
+         semitones = [int(s) for s in semitones]
+@@ -107,7 +125,10 @@
+     for i, item in enumerate(items):
+         dur = float(item["dur"])
+         ids = list(item.get("notes") or [])
+-        semi = semitones[i] if semitones is not None else 0
++        if semitones is not None:
++            semi = semitones[i]
++        else:
++            semi = _item_semitone(item)
+         if not ids:
+             out.append(IRRest(dur))
+         elif len(ids) == 1:
+@@ -118,15 +139,25 @@
+ 
+ 
+ def to_storage(elements: Sequence) -> list:
+-    """IR → 存储格式。semitone **不落盘**(D1)。"""
++    """IR → 存储格式。
++
++    note_id **始终不含 semitone**(D1);半音以可选字段 `semitone` 落在存储项上,
++    自然音不写该字段,保证旧库与安卓端读到的 JSON 与历史完全一致。
++    """
+     out = []
+     for el in elements:
+         if isinstance(el, IRRest):
+             out.append({"notes": [], "dur": el.dur})
+         elif isinstance(el, IRNote):
+-            out.append({"notes": [el.note_id], "dur": el.dur})
++            item = {"notes": [el.note_id], "dur": el.dur}
++            if el.semitone:
++                item["semitone"] = el.semitone
++            out.append(item)
+         elif isinstance(el, IRChord):
+-            out.append({"notes": [n.note_id for n in el.notes], "dur": el.dur})
++            item = {"notes": [n.note_id for n in el.notes], "dur": el.dur}
++            if any(n.semitone for n in el.notes):
++                item["semitone"] = 1
++            out.append(item)
+         else:
+             raise TypeError(f"未知 IR 元素类型: {type(el)!r}")
+     return out
+diff --git a/core/compiler.py b/core/compiler.py
+--- a/core/compiler.py
++++ b/core/compiler.py
+@@ -195,8 +195,12 @@
+                 skipped += 1
+                 plan.append({"kind": "rest", "dur": note.dur, "index": idx})
+                 continue
+-            # 物理直达键命中则不再按修饰键(决策 D3)
+-            override = params.pitch_direct_overrides.get(note.note_id)
++            # 物理直达键命中则不再按修饰键(决策 D3)。
++            # 但**带半音的音绝不能走直达键**:note_id 结构上不含 semitone,
++            # 于是 high_1# 会与 high_1 命中同一条覆盖(","),从而绕过高八度
++            # 修饰键被弹成自然高音 1。半音音必须走"修饰键 + 音位键"路径。
++            override = (params.pitch_direct_overrides.get(note.note_id)
++                        if not note.semitone else None)
+             if override:
+                 key, button = override, None
+             else:
+diff --git a/gui/player_tab.py b/gui/player_tab.py
+--- a/gui/player_tab.py
++++ b/gui/player_tab.py
+@@ -103,6 +103,10 @@
+         self._had_error = False
+         self._paused_done = 0
+         self._paused_total = 0
++        # 开始演奏前的切窗倒计时(秒),config.yaml 的 player.countdown_seconds 可调
++        self._countdown_seconds = max(1, int(player_cfg.get("countdown_seconds", 3)))
++        # 事件路径最近一次编译的降级清单:演奏结束仍要能报给用户
++        self._last_degradations = []
+         # 焦点检测:丢失目标窗口焦点时自动暂停,恢复后由用户选择续播或从头
+         focus_cfg = player_cfg.get("focus_check") or {}
+         self._focus_enabled = bool(focus_cfg.get("enabled", True))
+@@ -350,13 +354,14 @@
+         start_index = self._paused_done if self._paused_done > 0 else 0
+         self._pending = (score["notes"], self.bpm_spin.value(), start_index, score["name"])
+         self._had_error = False
+-        self._countdown_left = 3
++        self._countdown_left = self._countdown_seconds
++        n = self._countdown_seconds
+         self.play_btn.setEnabled(False)
+         self.stop_btn.setEnabled(True)
+         self.reset_btn.setEnabled(False)
+         resume_hint = f"从第 {start_index} 音符继续" if start_index > 0 else ""
+-        self.state_label.setText(f"3 秒后演奏: 《{score['name']}》 {resume_hint}".strip())
+-        self.progress_state.setText(f"{self._countdown_left} 秒后开始演奏,请切换到游戏窗口...")
++        self.state_label.setText(f"{n} 秒后演奏: 《{score['name']}》 {resume_hint}".strip())
++        self.progress_state.setText(f"{n} 秒后开始演奏,请切换到游戏窗口...")
+         self._countdown_timer = QTimer(self)
+         self._countdown_timer.timeout.connect(self._countdown_tick)
+         self._countdown_timer.start(1000)
+@@ -395,12 +400,27 @@
+             bpm=bpm, settle_ms=self._settle_ms,
+             release_settle_ms=self._release_settle_ms,
+             hold_ratio=self._hold_ratio, gap_ms=self._gap_ms)
++        # 存下来:演奏结束后仍要能把降级计数报给用户(不能只闪一下开播提示)
++        self._last_degradations = list(degradations)
++        self._abort_hint = getattr(plan, "abort_hint", "") or ""
+         self._event_player.play(plan.events, plan.interrupt_mode,
+                                 start_index=start_index, score_name=score_name)
+         n = len(degradations)
+         suffix = f" · 已降级 {n} 处" if n else ""
+         self.state_label.setText(f"演奏中 BPM {bpm} · {self._profile.name}")
+         self.progress_state.setText(f"演奏中...{suffix}")
++        self._apply_degradation_tooltip()
++
++    def _apply_degradation_tooltip(self):
++        """降级明细挂在状态标签的 tooltip 上,悬停即可看到每一条降级原因。"""
++        degs = self._last_degradations
++        if degs:
++            detail = "\n".join(str(d) for d in degs[:20])
++            if len(degs) > 20:
++                detail += f"\n... 共 {len(degs)} 条"
++            self.progress_state.setToolTip(f"降级明细:\n{detail}")
++        else:
++            self.progress_state.setToolTip("")
+ 
+     def _on_aborted(self, reason):
+         """中止(S2):进度清空,不可续播。"""
+@@ -412,7 +432,8 @@
+         self.stop_btn.setEnabled(False)
+         self.reset_btn.setEnabled(False)
+         self.state_label.setText("已中止")
+-        self.progress_state.setText(reason or "演奏已中止")
++        # S2(NPC 场景)的中止提示由 scenario 给出,比通用文案更有指导性
++        self.progress_state.setText(reason or getattr(self, "_abort_hint", "") or "演奏已中止")
+         self.progress_bar.setRange(0, 100)
+         self.progress_bar.setValue(0)
+         self.pos_label.setText("0 / 0")
+@@ -611,7 +632,14 @@
+         if normal:
+             self.state_label.setText("就绪")
+             if summary is None:
+-                self.progress_state.setText("演奏完成")
++                # 事件路径(三角洲档位)没有 PlayLogger 的 summary,但降级计数
++                # 必须在演奏结束时依然可见——只闪在开播提示里等于没报。
++                n = len(getattr(self, "_last_degradations", ()))
++                if n:
++                    self.progress_state.setText(f"演奏完成 · 已降级 {n} 处")
++                    self._apply_degradation_tooltip()
++                else:
++                    self.progress_state.setText("演奏完成")
+         elif not self._had_error:
+             self.state_label.setText("就绪")
+             self.progress_state.setText("已停止")
+diff --git a/config.yaml b/config.yaml
+--- a/config.yaml
++++ b/config.yaml
+@@ -29,6 +29,8 @@
+   modifier_release_ms: 20
+   # 全局紧急停止热键
+   stop_hotkey: F8
++  # 开始演奏前的切窗倒计时(秒);3 秒不够切回游戏窗口时调大
++  countdown_seconds: 3
+   # 系统输出延迟补偿(毫秒,延迟校准向导写入;0 = 不补偿)
+   latency_compensation_ms: 0
+   # 真人化演奏节奏:起音微偏移 / 长短音动态按住 / 乐句呼吸,更贴近真人演奏
+diff --git a/tests/test_ir.py b/tests/test_ir.py
+--- a/tests/test_ir.py
++++ b/tests/test_ir.py
+@@ -72,11 +72,29 @@
+         self.assertEqual(ir[2].notes[0].pitch, 3)
+         self.assertEqual(ir[3].octave, -1)
+ 
+-    def test_semitone_injected_but_not_persisted(self):
+-        """D8 注入通道:IR 带 semitone,落盘时丢弃。"""
++    def test_semitone_roundtrip_via_optional_field(self):
++        """D8 注入通道:半音以存储项的可选字段 semitone 承载,note_id 仍不含它(D1)。"""
+         ir = from_storage([{"notes": ["mid_3"], "dur": 1.0}], semitones=[1])
+         self.assertEqual(ir[0].semitone, 1)
+-        self.assertEqual(to_storage(ir), [{"notes": ["mid_3"], "dur": 1.0}])
++        self.assertEqual(to_storage(ir), [{"notes": ["mid_3"], "dur": 1.0, "semitone": 1}])
++        # note_id 永远保持三字节形态,安卓端与旧库不受影响
++        self.assertEqual(ir[0].note_id, "mid_3")
++        # 自然音不写该字段,保证旧库读到的 JSON 与历史完全一致
++        nat = from_storage([{"notes": ["mid_3"], "dur": 1.0}])
++        self.assertEqual(to_storage(nat), [{"notes": ["mid_3"], "dur": 1.0}])
++
++    def test_semitone_read_from_storage_field(self):
++        """存储项自带 semitone 字段时,无需 semitones 参数也能还原(parser 产物直通)。"""
++        ir = from_storage([{"notes": ["low_1"], "dur": 0.5, "semitone": 1}])
++        self.assertEqual((ir[0].octave, ir[0].pitch, ir[0].semitone), (-1, 1, 1))
++        # 显式 semitones 参数优先于字段
++        ir2 = from_storage([{"notes": ["low_1"], "dur": 0.5, "semitone": 1}], semitones=[0])
++        self.assertEqual(ir2[0].semitone, 0)
++
++    def test_semitone_field_invalid_raises(self):
++        for bad in (2, -1, "1", True):
++            with self.assertRaises(ValueError):
++                from_storage([{"notes": ["mid_1"], "dur": 1.0, "semitone": bad}])
+ 
+     def test_semitones_length_mismatch_raises(self):
+         """D9:长度不一致必须报错,绝不静默错位回填。"""
+diff --git a/tests/test_semitone.py b/tests/test_semitone.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_semitone.py
+@@ -0,0 +1,135 @@
++"""回归测试:半音(# 升半音)链路与直达键守卫。
++
++覆盖本次补丁的三处改动:
++  1. core/parser.py   简谱 `#` 升半音标记 → 存储项的可选字段 semitone
++  2. core/ir.py       存储项 semitone 字段 ↔ IR 的双向承载(且不写进 note_id)
++  3. core/compiler.py 带半音的音不得走物理直达键(否则绕过高八度修饰键)
++  4. config.yaml      player.countdown_seconds 可配置
++
++这些用例不依赖真实游戏与真实 SendInput。
++"""
++
++import os
++import unittest
++
++import yaml
++
++from core.compiler import ChordPolicy, CompileParams, ModifierPolicy, compile_score
++from core.ir import IRNote, from_storage, to_storage
++from core.parser import parse_jianpu
++from core.profile import load_profiles
++from gui.player_tab import build_event_plan
++
++REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++PROFILES_DIR = os.path.join(REPO_ROOT, "profiles")
++LEGACY_KEYMAP = {"high": list("QWERTYU"), "mid": list("ASDFGHJ"), "low": list("ZXCVBNM")}
++KW = dict(bpm=100, settle_ms=30.0, release_settle_ms=20.0, hold_ratio=1.0, gap_ms=0.0)
++
++
++def _delta():
++    return [p for p in load_profiles(PROFILES_DIR, fallback_keymap=LEGACY_KEYMAP)
++            if p.id == "delta_force_harmonica"][0]
++
++
++def _sig(events):
++    return [(e.device, e.key, e.action) for e in events]
++
++
++class TestParserSharp(unittest.TestCase):
++    def test_sharp_marks_semitone(self):
++        r = parse_jianpu("1# 2 3,# 4'")
++        self.assertEqual([n.get("semitone", 0) for n in r], [1, 0, 1, 0])
++        self.assertEqual([n["notes"][0] for n in r],
++                         ["mid_1", "mid_2", "low_3", "high_4"])
++
++    def test_sharp_with_duration_suffix(self):
++        r = parse_jianpu("1#_ 5'#-")
++        self.assertEqual((r[0]["semitone"], r[0]["dur"]), (1, 0.5))
++        self.assertEqual((r[1]["semitone"], r[1]["dur"]), (1, 2.0))
++
++    def test_natural_note_has_no_semitone_field(self):
++        """自然音不写该字段:旧库与安卓端读到的 JSON 与历史完全一致。"""
++        for item in parse_jianpu("1 2 3 4 5 6 7"):
++            self.assertNotIn("semitone", item)
++
++    def test_sharp_in_chord_marks_item(self):
++        """和弦内任一音带 # 时,整个和弦项标记为半音(降级取首音才不会丢信息)。"""
++        r = parse_jianpu("[1 3# 5]-")
++        self.assertEqual(r[0]["notes"], ["mid_1", "mid_3", "mid_5"])
++        self.assertEqual(r[0]["semitone"], 1)
++
++
++class TestIRSemitone(unittest.TestCase):
++    def test_note_id_excludes_semitone(self):
++        """D1:note_id 永不含半音(半音走独立字段)。"""
++        self.assertEqual(IRNote(3, 0, 1).note_id, "mid_3")
++        self.assertEqual(IRNote(1, 1, 0).note_id, "high_1")
++
++    def test_field_roundtrip(self):
++        ir = from_storage([{"notes": ["low_1"], "dur": 0.5, "semitone": 1}])
++        self.assertEqual((ir[0].octave, ir[0].pitch, ir[0].semitone), (-1, 1, 1))
++        self.assertEqual(to_storage(ir), [{"notes": ["low_1"], "dur": 0.5, "semitone": 1}])
++
++    def test_natural_storage_unchanged(self):
++        """自然音的落盘 JSON 与历史完全一致(不新增字段)。"""
++        ir = from_storage([{"notes": ["mid_3"], "dur": 1.0}])
++        self.assertEqual(to_storage(ir), [{"notes": ["mid_3"], "dur": 1.0}])
++
++    def test_explicit_semitones_argument_wins(self):
++        ir = from_storage([{"notes": ["low_1"], "dur": 1.0, "semitone": 1}], semitones=[0])
++        self.assertEqual(ir[0].semitone, 0)
++
++    def test_invalid_field_raises(self):
++        for bad in (2, -1, "1", True):
++            with self.assertRaises(ValueError):
++                from_storage([{"notes": ["mid_1"], "dur": 1.0, "semitone": bad}])
++
++    def test_length_mismatch_raises(self):
++        with self.assertRaises(ValueError):
++            from_storage([{"notes": ["mid_1"], "dur": 1.0}], semitones=[1, 0])
++
++
++class TestDirectOverrideSemitoneGuard(unittest.TestCase):
++    """带半音的音必须绕开物理直达键,否则会被弹成自然音。"""
++
++    def _params(self):
++        from core.compiler import Modifier
++        return CompileParams(
++            bpm=100, pitch_keys=("Z", "X", "C", "V", "B", "N", "M"),
++            modifier_buttons={Modifier.LOWER: "left", Modifier.SEMITONE: "middle",
++                              Modifier.HIGHER: "right"},
++            pitch_direct_overrides={"high_1": ","},
++            hold_ratio=1.0, gap_ms=0.0,
++            modifier_policy=ModifierPolicy.OCTAVE_FIRST,
++            chord_policy=ChordPolicy.CHORD_FIRST,
++        )
++
++    def test_natural_uses_override(self):
++        res = compile_score([IRNote(1, 1, 0)], self._params())
++        self.assertIn((",", "down"), [(e.key, e.action) for e in res.events])
++        self.assertNotIn(("right", "down"), [(e.key, e.action) for e in res.events])
++
++    def test_semitone_skips_override(self):
++        res = compile_score([IRNote(1, 1, 1)], self._params())
++        keys = [(e.device, e.key, e.action) for e in res.events]
++        self.assertNotIn((",", "down"), [(k, a) for _, k, a in keys])
++        self.assertIn(("mouse", "right", "down"), keys, "带半音应走右键(高八度)修饰路径")
++
++    def test_semitone_direct_override_via_event_plan(self):
++        """端到端:delta 档位下 high_1# 不得命中 ',' 直达键。"""
++        plan, _ = build_event_plan([{"notes": ["high_1"], "dur": 1.0, "semitone": 1}],
++                                   _delta(), "free_play", **KW)
++        sig = _sig(plan.events)
++        self.assertNotIn((",", "down"), [(k, a) for _, k, a in sig])
++        self.assertIn(("mouse", "right", "down"), sig)
++
++
++class TestCountdownConfig(unittest.TestCase):
++    def test_config_exposes_countdown(self):
++        cfg = yaml.safe_load(open(os.path.join(REPO_ROOT, "config.yaml"), encoding="utf-8"))
++        self.assertIn("countdown_seconds", cfg["player"])
++        self.assertGreaterEqual(int(cfg["player"]["countdown_seconds"]), 1)
++
++
++if __name__ == "__main__":
++    unittest.main()
