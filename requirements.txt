@@ -1,3 +1,5 @@
 PyQt6>=6.7
 pynput>=1.7.6
 PyYAML>=6.0.1
+requests>=2.31.0
+Pillow>=10.0.0

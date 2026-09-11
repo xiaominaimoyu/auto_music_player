@@ -1,4 +1,4 @@
-"""乐谱库页(对齐 Web 设计稿):列表 + 刷新/去演奏/删除。"""
+"""乐谱库页：列表、详情编辑、试听、导入导出与演奏入口。"""
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -51,6 +51,9 @@ class LibraryTab(QWidget):
         refresh_btn = QPushButton("刷新")
         refresh_btn.setObjectName("BtnSecondary")
         refresh_btn.clicked.connect(self.refresh)
+        detail_btn = QPushButton("查看详情")
+        detail_btn.setObjectName("BtnSecondary")
+        detail_btn.clicked.connect(self._open_selected)
         play_btn = QPushButton("去演奏")
         play_btn.setObjectName("BtnPrimary")
         play_btn.clicked.connect(self._go_play_selected)
@@ -70,6 +73,7 @@ class LibraryTab(QWidget):
         exp_midi_btn.setToolTip("导出选中乐谱为标准 MIDI 文件(Type 0)")
         exp_midi_btn.clicked.connect(lambda: self._export_selected("midi"))
         btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(detail_btn)
         btn_row.addWidget(play_btn)
         btn_row.addWidget(del_btn)
         btn_row.addStretch(1)
@@ -86,7 +90,7 @@ class LibraryTab(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
-        self.table.cellDoubleClicked.connect(lambda r, c: self._go_play_row(r))
+        self.table.cellDoubleClicked.connect(lambda r, _c: self._open_row(r))
         root.addWidget(self.table, 1)
         self.refresh()
 
@@ -126,8 +130,26 @@ class LibraryTab(QWidget):
         row = sorted(rows)[0]
         return int(self.table.item(row, 0).text())
 
-    def _go_play_row(self, row):
-        self.go_play.emit(int(self.table.item(row, 0).text()))
+    def _open_row(self, row):
+        self._open_detail(int(self.table.item(row, 0).text()))
+
+    def _open_selected(self):
+        score_id = self._selected_id()
+        if score_id is not None:
+            self._open_detail(score_id)
+
+    def _open_detail(self, score_id):
+        score = self._db.get_score(score_id)
+        if score is None:
+            return
+        from gui.score_detail_dialog import ScoreDetailDialog
+
+        dialog = ScoreDetailDialog(self, self._db, score)
+        dialog.exec()
+        if dialog.saved:
+            self.refresh()
+        if dialog.play_requested:
+            self.go_play.emit(score_id)
 
     def _go_play_selected(self):
         score_id = self._selected_id()

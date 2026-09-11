@@ -63,7 +63,10 @@ class PlayerEngine(private val scope: kotlinx.coroutines.CoroutineScope) {
         job = scope.launch {
             val beatMs = 60000.0 / bpm.coerceAtLeast(1)
             val total = notes.size
+            val safeStartIndex = startIndex.coerceIn(0, total)
             lastTotal = total
+            lastDone = safeStartIndex
+            _state.value = State.Playing(lastDone, total)
             var complete = true
             var errorMsg: String? = null
             // 真人化塑形:每次演奏独立随机(细微差别,像真人);null = 机械等间隔
@@ -72,7 +75,7 @@ class PlayerEngine(private val scope: kotlinx.coroutines.CoroutineScope) {
             try {
                 var nextStart = SystemClock.uptimeMillis()
                 var prevRelease: Long? = null   // 上一发音音符完全释放时刻(链式防叠键下限)
-                for (idx in startIndex.coerceIn(0, total) until total) {
+                for (idx in safeStartIndex until total) {
                     val note = notes[idx]
                     val durMs = note.dur * beatMs
                     val timing = timings?.get(idx)

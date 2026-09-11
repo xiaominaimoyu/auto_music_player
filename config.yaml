@@ -14,6 +14,12 @@ keymap:
   # 低音 1-7
   low: [Z, X, C, V, B, N, M]
 
+advisor:
+  # 实验性 AI 编谱建议;默认关闭,开启后复用模型设置中的激活供应商。
+  enabled: false
+  # 留空时使用激活供应商的模型。
+  model: ""
+
 player:
   # 默认演奏速度(拍/分钟,四分音符为一拍)
   default_bpm: 100

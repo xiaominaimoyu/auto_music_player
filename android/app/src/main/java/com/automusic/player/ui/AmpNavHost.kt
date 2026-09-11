@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.Icon
@@ -28,6 +29,7 @@ enum class Tab(val title: String) {
     LIBRARY("乐谱库"),
     PLAY("演奏"),
     CALIB("标定"),
+    SETTINGS("设置"),
 }
 
 @Composable
@@ -42,6 +44,7 @@ fun AmpNavHost(container: AppContainer) {
                     Tab.LIBRARY to Icons.Outlined.LibraryMusic,
                     Tab.PLAY to Icons.Outlined.PlayCircle,
                     Tab.CALIB to Icons.Outlined.TouchApp,
+                    Tab.SETTINGS to Icons.Outlined.Settings,
                 )
                 for (t in Tab.entries) {
                     val selected = tab == t
@@ -63,10 +66,11 @@ fun AmpNavHost(container: AppContainer) {
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (tab) {
-                Tab.UPLOAD -> UploadScreen(container)
+                Tab.UPLOAD -> UploadScreen(container, onOpenSettings = { tab = Tab.SETTINGS })
                 Tab.LIBRARY -> LibraryScreen(container, onGoPlay = { tab = Tab.PLAY })
                 Tab.PLAY -> PlayScreen(container)
                 Tab.CALIB -> CalibScreen(container)
+                Tab.SETTINGS -> SettingsScreen(container)
             }
         }
     }

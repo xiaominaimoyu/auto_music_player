@@ -19,7 +19,7 @@ STATE_WARNING = "#FBBF24"
 STATE_ERROR = "#F87171"
 STATE_INFO = "#38BDF8"
 RADIUS_MD = 8
-RADIUS_LG = 16
+RADIUS_LG = 8
 
 FONT_SANS = '"Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif'
 FONT_MONO = '"Consolas", "Cascadia Code", monospace'
@@ -28,7 +28,7 @@ APP_QSS = f"""
 * {{
     font-family: {FONT_SANS};
 }}
-QMainWindow, QWidget#AppRoot {{
+QMainWindow, QDialog, QWidget#AppRoot {{
     background: {BG};
     color: {INK};
 }}
@@ -136,8 +136,8 @@ QLabel#StepBadge {{
 QPushButton {{
     border: none;
     border-radius: {RADIUS_MD}px;
-    min-height: 34px;
-    padding: 0 22px;
+    min-height: 36px;
+    padding: 0 16px;
     font-size: 14px;
     font-weight: 600;
     background: transparent;
@@ -248,6 +248,53 @@ QLabel#HintText {{
     font-size: 12px;
 }}
 
+/* ---------- 识别与节奏状态 ---------- */
+QFrame#RecognitionPanel {{
+    background: {BRAND_SOFT};
+    border: 1px solid rgba(212, 162, 76, 0.28);
+    border-radius: {RADIUS_MD}px;
+}}
+QLabel#RecognitionTitle {{
+    color: {INK};
+    font-size: 14px;
+    font-weight: 600;
+}}
+QLabel#RecognitionElapsed {{
+    color: {BRAND};
+    font-size: 12px;
+    font-weight: 600;
+}}
+QLabel#BpmValue {{
+    background: {SURFACE_2};
+    border: 1px solid {LINE_2};
+    border-radius: 6px;
+    color: {BRAND};
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}}
+QLabel#BpmValue[invalid="true"] {{
+    color: {STATE_ERROR};
+    border-color: rgba(248, 113, 113, 0.35);
+}}
+QFrame#RhythmWarning {{
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.24);
+    border-radius: {RADIUS_MD}px;
+}}
+QLabel#RhythmWarningText {{
+    color: {STATE_WARNING};
+    font-size: 12px;
+}}
+QPushButton#BtnWarning {{
+    background: transparent;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    color: {STATE_WARNING};
+}}
+QPushButton#BtnWarning:hover {{
+    background: rgba(251, 191, 36, 0.08);
+}}
+
 /* ---------- 表格 ---------- */
 QTableWidget {{
     background: transparent;
@@ -278,6 +325,31 @@ QHeaderView::section {{
 QTableCornerButton::section {{
     background: {SURFACE_2};
     border: none;
+}}
+QMenu#NoteActionMenu {{
+    background: {SURFACE_2};
+    border: 1px solid {LINE_2};
+    border-radius: {RADIUS_MD}px;
+    padding: 6px;
+    color: {INK};
+}}
+QMenu#NoteActionMenu::item {{
+    min-width: 230px;
+    padding: 9px 14px;
+    border-radius: 6px;
+}}
+QMenu#NoteActionMenu::item:selected {{
+    background: {BRAND_SOFT};
+    color: {BRAND};
+}}
+QMenu#NoteActionMenu::item:disabled {{
+    color: {INK_2};
+    font-weight: 600;
+}}
+QMenu#NoteActionMenu::separator {{
+    height: 1px;
+    margin: 5px 8px;
+    background: {LINE};
 }}
 QScrollBar:vertical {{
     background: transparent;

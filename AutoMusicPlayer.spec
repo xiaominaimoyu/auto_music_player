@@ -22,10 +22,10 @@ EXCLUDES = [
     "PyQt6.QtHttpServer", "PyQt6.QtGraphs", "PyQt6.QtGrpc",
     # 不再使用的库
     "docx", "lxml",
-    # 在线大模型识别已移除,requests/Pillow 不再需要
-    "requests", "PIL",
     # 环境里其他包注册的 hook 拽进来的无关依赖(mitmproxy hook 引入)
     "numpy", "cryptography", "mitmproxy",
+    # Pillow 的 AVIF 插件较大,当前只需要常见乐谱图片格式
+    "PIL._avif", "PIL.ImageAVIF",
     # 标准库中用不到的大件
     "tkinter", "pydoc_data",
 ]

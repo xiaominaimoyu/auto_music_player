@@ -12,9 +12,10 @@
 | 桌面版(core/) | 安卓版(android/app/src/main/java/com/automusic/player/) | 说明 |
 |---|---|---|
 | parser.py | core/JianpuParser.kt | 简谱解析,协议一致 |
-| prompt.py | core/Prompt.kt | 外部 AI 识别提示词,协议一致 |
+| recognizer.py / Prompt.kt | core/recognizer/ + core/Prompt.kt | 在线识别与外部 AI 提示词 |
 | humanize.py | core/Humanize.kt | 真人化节奏塑形,规则一致 |
 | database.py | core/db/ | Room(SQLite) |
+| settings_store.py | core/settings/SettingsStore.kt | 模型供应商 DataStore 存储 |
 | keymap.py | core/KeyPointMap.kt | 音符 → **屏幕坐标**(归一化 0..1) |
 | player.py | core/PlayerEngine.kt | 协程 + 绝对时钟调度 + 真人化 |
 | keyboard_driver.py(SendInput) | input/TouchInjector.kt + AmpAccessibilityService | 无障碍手势注入 |
@@ -44,9 +45,13 @@ cd android
 
 1. **标定**:导入游戏演奏界面截图(鸣潮/原神内置按真机实测的默认布局),
    微调 21 个琴键点位(或"四角推算"自动插值),保存;可用"测试点击"验证落点
-2. **识别**(免配置,纯粘贴):「识别」页点「复制提示词」→ 粘贴到任意外部 AI 工具
-   (如 ChatGPT / 豆包 / Kimi)并附上乐谱图片 → 把返回的简谱粘贴回结果框 → 校对 → 保存入库
-3. **演奏**:选谱 → 选布局 → 调 BPM →(可选)开启真人化演奏 → 开始演奏 → 3 秒倒计时内切到游戏
+2. **模型设置**:首次测试可使用内置限额渠道；新增供应商保存后自动成为当前模型，也可手动切换
+3. **识别**:导入乐谱图片后在线识别曲名、简谱、歌词和节奏；未配置模型时可复制提示词到外部 AI 工具，再把结果粘贴回来
+4. **校对与试听**:按音符查看歌词和时值，在指定音符前后插入半拍休止或删除音符，使用口琴音色试听，确认后保存
+5. **乐谱库**:点击曲目进入详情，编辑曲名、简谱、歌词和默认 BPM，支持试听或进入演奏
+6. **演奏**:选谱 → 选布局 → 调 BPM → 试听当前曲目 →(可选)开启真人化演奏 → 开始演奏 → 3 秒倒计时内切到游戏
+
+> 当前测试 APK 内置了一个额度受限的临时供应商凭据，安装包可被反编译提取该凭据；正式发布前应移除或轮换。
 
 ## 技术要点
 

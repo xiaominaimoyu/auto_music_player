@@ -28,15 +28,17 @@ object JianpuParser {
             if (TUNE_LINE_RE.containsMatchIn(line) || isLyricLine(line)) continue
             val cleaned = line.replace("|", " ").replace("‖", " ")
 
+            val tokens = mutableListOf<Pair<Int, NoteEvent>>()
             val chordMatches = CHORD_RE.findAll(cleaned).toList()
             val singleScan = CHORD_RE.replace(cleaned, " ")
             for (m in NOTE_RE.findAll(singleScan)) {
-                buildSingle(m.value)?.let { result.add(it) }
+                buildSingle(m.value)?.let { tokens.add(m.range.first to it) }
             }
             for (cm in chordMatches) {
                 val note = buildChord(cm.groupValues[1], cm.groupValues[2])
-                if (note.notes.isNotEmpty()) result.add(note)
+                if (note.notes.isNotEmpty()) tokens.add(cm.range.first to note)
             }
+            result.addAll(tokens.sortedBy { it.first }.map { it.second })
         }
         return result
     }

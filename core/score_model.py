@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass, field
 
 _NOTE_ID_RE = re.compile(r"^(high|mid|low)_([1-7])$")
-MIN_BPM, MAX_BPM = 30, 300
+MIN_BPM, MAX_BPM = 1, 300
 MAX_DUR_BEATS = 16.0
 
 
