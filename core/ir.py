@@ -107,7 +107,13 @@ def from_storage(items: Sequence[dict], semitones: Iterable[int] | None = None) 
     for i, item in enumerate(items):
         dur = float(item["dur"])
         ids = list(item.get("notes") or [])
-        semi = semitones[i] if semitones is not None else 0
+        # 优先从 dict 内 semitone 字段读取;外部 semitones 参数作为备选注入通道
+        if "semitone" in item:
+            semi = int(item["semitone"])
+        elif semitones is not None:
+            semi = semitones[i]
+        else:
+            semi = 0
         if not ids:
             out.append(IRRest(dur))
         elif len(ids) == 1:

@@ -29,6 +29,7 @@ class Note:
     num: int        # 音高 1-7
     octave: str     # high / mid / low
     dur: float = 1.0
+    semitone: int = 0   # 0 自然 / 1 升半音
 
     @property
     def note_id(self) -> str:
@@ -58,7 +59,8 @@ class Score:
         elements = []
         for item in items:
             dur = float(item["dur"])
-            notes = tuple(_note_from_id(nid, dur) for nid in item.get("notes") or [])
+            semitone = int(item.get("semitone", 0))
+            notes = tuple(_note_from_id(nid, dur, semitone) for nid in item.get("notes") or [])
             if not notes:
                 elements.append(Rest(dur))
             elif len(notes) == 1:
@@ -73,9 +75,15 @@ class Score:
             if isinstance(el, Rest):
                 out.append({"notes": [], "dur": el.dur})
             elif isinstance(el, Note):
-                out.append({"notes": [el.note_id], "dur": el.dur})
+                item = {"notes": [el.note_id], "dur": el.dur}
+                if el.semitone:
+                    item["semitone"] = el.semitone
+                out.append(item)
             elif isinstance(el, Chord):
-                out.append({"notes": [n.note_id for n in el.notes], "dur": el.dur})
+                item = {"notes": [n.note_id for n in el.notes], "dur": el.dur}
+                if any(n.semitone for n in el.notes):
+                    item["semitone"] = 1
+                out.append(item)
             else:
                 raise TypeError(f"未知音符类型: {type(el)!r}")
         return out
@@ -85,11 +93,11 @@ class Score:
         return sum(el.dur for el in self.elements)
 
 
-def _note_from_id(note_id: str, dur: float) -> Note:
+def _note_from_id(note_id: str, dur: float, semitone: int = 0) -> Note:
     m = _NOTE_ID_RE.match(note_id)
     if not m:
         raise ValueError(f"无效音符: {note_id}(应为 high/mid/low_1~7)")
-    return Note(num=int(m.group(2)), octave=m.group(1), dur=dur)
+    return Note(num=int(m.group(2)), octave=m.group(1), dur=dur, semitone=semitone)
 
 
 @dataclass
@@ -157,4 +165,8 @@ def _validate_item(i: int, item) -> list:
         errors.append(ValidationError(i, "时值必须大于 0"))
     elif dur > MAX_DUR_BEATS:
         errors.append(ValidationError(i, f"时值超出上限(最大 {MAX_DUR_BEATS:g} 拍)"))
+    if "semitone" in item:
+        semi = item["semitone"]
+        if isinstance(semi, bool) or not isinstance(semi, (int, float)) or int(semi) not in (0, 1):
+            errors.append(ValidationError(i, "半音标记必须为 0 或 1"))
     return errors

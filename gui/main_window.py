@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
         self.library_tab.go_play.connect(self._go_play)
 
         hotkey = str(cfg.get("player", {}).get("stop_hotkey", "F8")).lower()
-        self._hotkey_listener = pk.GlobalHotKeys({f"<{hotkey}>": player.stop})
+        self._hotkey_listener = pk.GlobalHotKeys({f"<{hotkey}>": self._on_hotkey_stop})
         self._hotkey_listener.start()
 
         # 退出清理挂在 aboutToQuit(事件循环仍存活)而非 closeEvent:
@@ -220,6 +220,12 @@ class MainWindow(QMainWindow):
 
         # 应用级事件过滤器:子控件覆盖边缘时也能命中拉伸
         QApplication.instance().installEventFilter(self)
+
+    def _on_hotkey_stop(self):
+        """F8 全局热键:同时停止 Player 和 EventPlayer。"""
+        self._player.stop()
+        if self._event_player is not None:
+            self._event_player.stop()
 
     def _cleanup_on_quit(self):
         """退出清理:停全局热键监听与演奏线程,确保全部按键释放。"""

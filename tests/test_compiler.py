@@ -222,6 +222,28 @@ class TestCompileDegradation(unittest.TestCase):
         self.assertEqual([e.device for e in r.events], ["kb", "kb"])
         self.assertEqual(r.events[0].key, ",")
 
+    def test_direct_override_semitone_guard(self):
+        """带 semitone 的音不走直达键,必须走修饰键路径。"""
+        p = CompileParams(pitch_direct_overrides={"high_1": ","},
+                          settle_ms=30.0, release_settle_ms=20.0, max_hold_ms=None)
+        r = compile_score([IRNote(1, 1, 1, 0.01)], p)
+        # 不应命中直达键 ",",应走修饰键路径(默认 OCTAVE_FIRST → right)
+        kb_keys = [e.key for e in r.events if e.device == "kb"]
+        self.assertNotIn(",", kb_keys)
+        self.assertIn("mouse", [e.device for e in r.events])
+        # OCTAVE_FIRST 策略下 high_1 + semitone → HIGHER (right),半音被降级
+        mouse_keys = [e.key for e in r.events if e.device == "mouse"]
+        self.assertIn("right", mouse_keys)
+        self.assertTrue(any(d.reason == "octave_first" for d in r.degradations))
+
+    def test_direct_override_no_semitone_still_hits(self):
+        """semitone=0 的音仍命中直达键,行为不变。"""
+        p = CompileParams(pitch_direct_overrides={"high_1": ","},
+                          settle_ms=30.0, release_settle_ms=20.0, max_hold_ms=None)
+        r = compile_score([IRNote(1, 1, 0, 0.01)], p)
+        self.assertEqual([e.device for e in r.events], ["kb", "kb"])
+        self.assertEqual(r.events[0].key, ",")
+
 
 class TestParamsValidation(unittest.TestCase):
     def test_bpm_bounds(self):

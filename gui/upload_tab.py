@@ -159,10 +159,11 @@ class UploadTab(QWidget):
         card3, lay3 = self._card(resizable=True)
         card3.setup(height=300, min_height=220)
         lay3.addLayout(_step_row("3", "校对表格", "音符列可写和弦,如 high_1,mid_3;时值单位:拍"))
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["音符", "时值(拍)"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["音符", "时值(拍)", "半音"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         lay3.addWidget(self.table, 1)
@@ -235,6 +236,7 @@ class UploadTab(QWidget):
             notes_str = ",".join(n["notes"]) if n["notes"] else "(休止)"
             self.table.setItem(row, 0, QTableWidgetItem(notes_str))
             self.table.setItem(row, 1, QTableWidgetItem(str(n["dur"])))
+            self.table.setItem(row, 2, QTableWidgetItem("#" if n.get("semitone") else ""))
 
     def _delete_selected_rows(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
@@ -246,6 +248,7 @@ class UploadTab(QWidget):
         for row in range(self.table.rowCount()):
             item_notes = self.table.item(row, 0)
             item_dur = self.table.item(row, 1)
+            item_semi = self.table.item(row, 2)
             if item_notes is None or item_dur is None:
                 raise ValueError(f"第 {row + 1} 行不完整")
             notes_str = item_notes.text().strip()
@@ -257,7 +260,11 @@ class UploadTab(QWidget):
             except ValueError:
                 raise ValueError(f"第 {row + 1} 行时值不是数字: {dur_str}")
             note_ids = [] if notes_str == "(休止)" else [x.strip() for x in notes_str.split(",") if x.strip()]
-            notes.append({"notes": note_ids, "dur": dur})
+            item = {"notes": note_ids, "dur": dur}
+            semi_text = item_semi.text().strip() if item_semi is not None else ""
+            if semi_text in ("#", "1"):
+                item["semitone"] = 1
+            notes.append(item)
         # 格式/取值校验统一交给 Schema 校验器(与入库校验同一套规则)
         errors = validate_notes(notes)
         if errors:

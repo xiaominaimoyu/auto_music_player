@@ -59,9 +59,11 @@ class TestParser(unittest.TestCase):
         r = parse_jianpu("一闪一闪亮晶晶\n1 1 5 5 6 6 5-")
         self.assertEqual(len(r), 7)
 
-    def test_dot_as_low_fallback(self):
+    def test_dot_is_dotted_not_low(self):
+        """`.` 是附点符号,不是低音标记(低音只能用 `,`)。"""
         r = parse_jianpu("5. 6.")
-        self.assertEqual([n["notes"][0] for n in r], ["low_5", "low_6"])
+        self.assertEqual([n["notes"][0] for n in r], ["mid_5", "mid_6"])
+        self.assertEqual([n["dur"] for n in r], [1.5, 1.5])
 
     def test_sample(self):
         """外部 AI 返回的典型规范化简谱(含高低音/附点/和弦/休止)全量解析。"""
@@ -124,6 +126,67 @@ class TestTokenOrder(unittest.TestCase):
                 {"notes": ["mid_3"], "dur": 1.0},
             ],
         )
+
+
+class TestSemitoneParsing(unittest.TestCase):
+    def test_sharp_mid(self):
+        r = parse_jianpu("1#")
+        self.assertEqual(r, [{"notes": ["mid_1"], "dur": 1.0, "semitone": 1}])
+
+    def test_sharp_high(self):
+        r = parse_jianpu("1'#")
+        self.assertEqual(r, [{"notes": ["high_1"], "dur": 1.0, "semitone": 1}])
+
+    def test_sharp_low(self):
+        r = parse_jianpu("1,#")
+        self.assertEqual(r, [{"notes": ["low_1"], "dur": 1.0, "semitone": 1}])
+
+    def test_no_sharp_no_semitone_field(self):
+        r = parse_jianpu("1")
+        self.assertEqual(r, [{"notes": ["mid_1"], "dur": 1.0}])
+        self.assertNotIn("semitone", r[0])
+
+    def test_sharp_in_collect_mode_no_error(self):
+        notes, errors = parse_jianpu("1# 2#", collect=True)
+        self.assertEqual(len(notes), 2)
+        self.assertEqual(errors, [])
+
+    def test_sharp_in_chord(self):
+        r = parse_jianpu("[1# 3 5]")
+        self.assertEqual(r[0]["notes"], ["mid_1", "mid_3", "mid_5"])
+        self.assertEqual(r[0]["semitone"], 1)
+
+
+class TestDottedNote(unittest.TestCase):
+    def test_dot_dotted_quarter(self):
+        r = parse_jianpu("5.")
+        self.assertEqual(r, [{"notes": ["mid_5"], "dur": 1.5}])
+
+    def test_comma_still_low(self):
+        r = parse_jianpu("5,")
+        self.assertEqual(r, [{"notes": ["low_5"], "dur": 1.0}])
+
+    def test_dot_eighth(self):
+        r = parse_jianpu("5_.")
+        self.assertEqual(r, [{"notes": ["mid_5"], "dur": 0.75}])
+
+    def test_dot_in_chord_same_as_single(self):
+        r = parse_jianpu("[1 3].")
+        self.assertEqual(r, [{"notes": ["mid_1", "mid_3"], "dur": 1.5}])
+
+    def test_chinese_dot_unchanged(self):
+        r = parse_jianpu("5·")
+        self.assertEqual(r, [{"notes": ["mid_5"], "dur": 1.5}])
+
+
+class TestChinesePunctuation(unittest.TestCase):
+    def test_chinese_quote_error(self):
+        _, errors = parse_jianpu("1\u2019 2", collect=True)
+        self.assertTrue(any("中文标点" in e.reason for e in errors))
+
+    def test_chinese_comma_error(self):
+        _, errors = parse_jianpu("1\uff0c 2", collect=True)
+        self.assertTrue(any("中文标点" in e.reason for e in errors))
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 _PITCH_SUFFIX = {"'": "high", ",": "low"}
 _CHORD_RE = re.compile(r"[\[\(]([^\]\)]+)[\]\)]([_\-.·]*)")
-_NOTE_RE = re.compile(r"[0-7](?:'|,|\.|·|_|-)*")
+_NOTE_RE = re.compile(r"[0-7](?:'|,|\.|·|_|-|#)*")
 _TUNE_LINE_RE = re.compile(r"^\s*1\s*=\s*[A-Ga-g]")
 _CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 
@@ -38,21 +38,24 @@ class ParseError:
 
 
 def _split_pitch_dur(suffix: str):
-    """把数字后的修饰符串拆成(音高, 时值部分)。"""
+    """把数字后的修饰符串拆成(音高, 时值部分, 半音标记)。
+
+    # 可出现在八度标记前或后(如 1#, 1'#, 1,#);. 始终作为附点符号,
+    不再视为低音标记(低音只能用 ,)。
+    """
     pitch = "mid"
+    semitone = 0
     rest = suffix
+    if rest.startswith("#"):
+        semitone = 1
+        rest = rest[1:]
     if rest.startswith(("'", ",")):
         pitch = _PITCH_SUFFIX[rest[0]]
         rest = rest[1:]
-    elif rest.startswith("·"):
-        # · 是明确的附点符号,始终作为附点
-        pass
-    elif rest.startswith("."):
-        # 容错:单独的 . 且后面没有时值符号时,视为低音
-        if len(rest) == 1 or rest[1] not in "_-.·":
-            pitch = "low"
-            rest = rest[1:]
-    return pitch, rest
+    if rest.startswith("#"):
+        semitone = 1
+        rest = rest[1:]
+    return pitch, rest, semitone
 
 
 def _parse_dur(rest: str) -> float:
@@ -77,14 +80,17 @@ def _note_id(num: int, pitch: str) -> str:
 def _build_single(token: str):
     """返回 (音符, 问题)。0 一律为休止;休止带八度记号记为问题,不影响输出。"""
     num = int(token[0])
-    pitch, rest = _split_pitch_dur(token[1:])
+    pitch, rest, semitone = _split_pitch_dur(token[1:])
     dur = _parse_dur(rest)
     problem = None
     if num == 0:
         if token[1:2] in ("'", ","):
             problem = "休止符 0 不应带八度记号"
         return {"notes": [], "dur": dur}, problem
-    return {"notes": [_note_id(num, pitch)], "dur": dur}, problem
+    item = {"notes": [_note_id(num, pitch)], "dur": dur}
+    if semitone:
+        item["semitone"] = 1
+    return item, problem
 
 
 def _build_chord(inner: str, suffix: str):
@@ -92,6 +98,7 @@ def _build_chord(inner: str, suffix: str):
     dur = _parse_dur(suffix)
     note_ids = []
     invalid = []
+    has_semitone = False
     for part in re.split(r"[,\s]+", inner.strip()):
         if not part:
             continue
@@ -104,9 +111,14 @@ def _build_chord(inner: str, suffix: str):
         if num == 0 or not 1 <= num <= 7:
             invalid.append(part)
             continue
-        pitch, _ = _split_pitch_dur(token[1:])
+        pitch, _, semitone = _split_pitch_dur(token[1:])
         note_ids.append(_note_id(num, pitch))
-    return {"notes": note_ids, "dur": dur}, invalid
+        if semitone:
+            has_semitone = True
+    item = {"notes": note_ids, "dur": dur}
+    if has_semitone:
+        item["semitone"] = 1
+    return item, invalid
 
 
 def _is_lyric_line(line: str) -> bool:
@@ -166,7 +178,11 @@ def _parse_line(line: str):
             if run_start is None:
                 run_start = j
         elif run_start is not None:
-            problems.append((line[run_start:j], "无法识别的内容"))
+            fragment = line[run_start:j]
+            if any(c in "\u2018\u2019\uff0c" for c in fragment):
+                problems.append((fragment, "中文标点不被识别为八度标记，请使用英文 ' 或 ,"))
+            else:
+                problems.append((fragment, "无法识别的内容"))
             run_start = None
     return notes, problems
 

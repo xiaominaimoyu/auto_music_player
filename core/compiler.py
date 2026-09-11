@@ -196,7 +196,11 @@ def _flatten(elements, params: CompileParams):
                 plan.append({"kind": "rest", "dur": note.dur, "index": idx})
                 continue
             # 物理直达键命中则不再按修饰键(决策 D3)
-            override = params.pitch_direct_overrides.get(note.note_id)
+            # 半音守卫:带 semitone 的音不能走直达键(直达键不含半音修饰态),
+            # 必须走修饰键路径以正确按下 SEMITONE 修饰键
+            override = None
+            if not note.semitone:
+                override = params.pitch_direct_overrides.get(note.note_id)
             if override:
                 key, button = override, None
             else:

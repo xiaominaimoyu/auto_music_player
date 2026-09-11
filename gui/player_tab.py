@@ -49,7 +49,8 @@ def build_event_plan(
     (识别类场景由 scenario.humanize 决定,见 core/scenario.py)。
     """
     scenario = get_scenario(scenario_id)
-    elements = ir_mod.from_storage(notes)
+    semitones = [n.get("semitone", 0) for n in notes]
+    elements = ir_mod.from_storage(notes, semitones=semitones)
     params = profile.build_compile_params(
         bpm=bpm,
         settle_ms=settle_ms,
@@ -501,6 +502,16 @@ class PlayerTab(QWidget):
             self.state_label.setText(f"演奏中 BPM {bpm}")
             self.progress_state.setText("演奏中...")
 
+    def _stop_all(self):
+        """统一停止:同时停止 Player 和 EventPlayer(若存在)。
+
+        stop() 对未播放的播放器是幂等空操作,双路径同时调用安全。
+        """
+        self._player.stop()
+        if self._event_player is not None:
+            self._event_player.stop()
+        self.progress_state.setText("正在暂停...")
+
     def _stop(self):
         timer = getattr(self, "_countdown_timer", None)
         if timer is not None and timer.isActive():
@@ -509,8 +520,7 @@ class PlayerTab(QWidget):
             self.stop_btn.setEnabled(False)
             self.progress_state.setText("已取消")
             return
-        self._player.stop()
-        self.progress_state.setText("正在暂停...")
+        self._stop_all()
 
     # ---------- 焦点检测 ----------
 
@@ -540,7 +550,9 @@ class PlayerTab(QWidget):
         self._focus_timer.start()
 
     def _check_focus(self):
-        if not self._player.is_playing:
+        if not self._player.is_playing and (
+            self._event_player is None or not self._event_player.is_playing
+        ):
             self._focus_timer.stop()
             return
         if self._policy is None:
@@ -559,7 +571,7 @@ class PlayerTab(QWidget):
     def _pause_for_focus(self):
         self._focus_timer.stop()
         self._focus_lost = True
-        self._player.stop()
+        self._stop_all()
         self.progress_state.setText("目标窗口失去焦点,正在暂停...")
 
     def _prompt_focus_recover(self):

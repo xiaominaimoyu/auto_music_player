@@ -78,6 +78,27 @@ class TestStorageRoundtrip(unittest.TestCase):
         self.assertEqual(ir[0].semitone, 1)
         self.assertEqual(to_storage(ir), [{"notes": ["mid_3"], "dur": 1.0}])
 
+    def test_semitone_from_dict_takes_priority(self):
+        """dict 内 semitone 字段优先于外部 semitones 参数。"""
+        ir = from_storage(
+            [{"notes": ["mid_3"], "dur": 1.0, "semitone": 1}],
+            semitones=[0],
+        )
+        self.assertEqual(ir[0].semitone, 1)
+
+    def test_semitone_external_fallback(self):
+        """dict 内无 semitone 字段时,使用外部 semitones 参数。"""
+        ir = from_storage(
+            [{"notes": ["mid_3"], "dur": 1.0}],
+            semitones=[1],
+        )
+        self.assertEqual(ir[0].semitone, 1)
+
+    def test_semitone_dict_field_not_persisted_by_to_storage(self):
+        """to_storage 不输出 semitone 字段(向后兼容)。"""
+        ir = from_storage([{"notes": ["mid_3"], "dur": 1.0, "semitone": 1}])
+        self.assertEqual(to_storage(ir), [{"notes": ["mid_3"], "dur": 1.0}])
+
     def test_semitones_length_mismatch_raises(self):
         """D9:长度不一致必须报错,绝不静默错位回填。"""
         with self.assertRaises(ValueError):
