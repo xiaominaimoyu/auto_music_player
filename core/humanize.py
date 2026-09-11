@@ -31,14 +31,14 @@ _OCTAVE_VAL = {"low": 0, "mid": 7, "high": 14}
 class HumanizeParams:
     """真人化参数。所有幅度都以毫秒计,保持克制——目标是"像人",不是"摇晃"。"""
 
-    jitter_ms: float = 8.0             # 起音正态微偏移 σ
-    breath_ms: float = 18.0            # 乐句边界后的呼吸停顿(基准值,实际 ×0.6~1.0 随机)
-    short_hold: tuple = (0.62, 0.72)    # 短音符(≤0.5 拍)hold 区间:轻快断奏
-    mid_hold: tuple = (0.72, 0.82)      # 中等音符 hold 区间
-    long_hold: tuple = (0.88, 0.96)     # 长音符(≥2 拍)hold 区间:绵延饱满
-    leap_ms: float = 3.0                # 大跳进附加换指时间(基准值,实际 ×0.5~1.0 随机)
+    jitter_ms: float = 12.0  # 起音正态微偏移 σ(增强:8→12,更自然的时序抖动)
+    breath_ms: float = 25.0  # 乐句边界后的呼吸停顿(增强:18→25,更明显的换气感)
+    short_hold: tuple = (0.58, 0.70)  # 短音符(≤0.5 拍)hold 区间:轻快断奏(更短促)
+    mid_hold: tuple = (0.70, 0.85)  # 中等音符 hold 区间(扩大上限,增加变化)
+    long_hold: tuple = (0.86, 0.98)  # 长音符(≥2 拍)hold 区间:绵延饱满(更接近满按)
+    leap_ms: float = 5.0  # 大跳进附加换指时间(增强:3→5,大跳更明显停顿)
     leap_threshold: int = LEAP_THRESHOLD
-    min_gap_ms: float = 2.0             # 塑形后保证的最小不叠键间隙
+    min_gap_ms: float = 1.5  # 塑形后保证的最小不叠键间隙(放宽:2.0→1.5,允许更连贯)
 
     def __post_init__(self):
         if self.jitter_ms < 0 or self.breath_ms < 0 or self.leap_ms < 0:
@@ -62,8 +62,9 @@ def _pitch_value(note_id: str):
     return _OCTAVE_VAL[name] + int(num)
 
 
-def plan_timings(elements, params: HumanizeParams | None = None,
-                 rng: random.Random | None = None) -> list:
+def plan_timings(
+    elements, params: HumanizeParams | None = None, rng: random.Random | None = None
+) -> list:
     """storage 格式音符序列 → 与元素等长的 (offset_ms, hold_ratio) 列表。
 
     休止元素(notes 为空)的返回项为 (0.0, None)——休止不发声,由调用方跳过;
@@ -72,8 +73,8 @@ def plan_timings(elements, params: HumanizeParams | None = None,
     p = params or HumanizeParams()
     rng = rng or random.Random()
     timings = []
-    prev_pitch = None      # 上一个发音元素的音高量值
-    prev_dur = None       # 上一个元素的时值(拍)
+    prev_pitch = None  # 上一个发音元素的音高量值
+    prev_dur = None  # 上一个元素的时值(拍)
     prev_was_rest = False  # 上一个元素是否为休止
     for el in elements:
         dur = float(el.get("dur") or 0)

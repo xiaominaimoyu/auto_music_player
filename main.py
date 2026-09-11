@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication
 
 from core.database import ScoreDB
 from core.event_player import EventPlayer
+from core.humanize import HumanizeParams
 from core.keyboard_driver import KeyboardDriver
 from core.keymap import KeyMap
 from core.play_logger import PlayLogger
@@ -40,7 +41,9 @@ def app_icon():
     if getattr(sys, "frozen", False):
         candidates.append(os.path.join(getattr(sys, "_MEIPASS", ""), "app.ico"))
         candidates.append(os.path.join(os.path.dirname(sys.executable), "app.ico"))
-    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico"))
+    candidates.append(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
+    )
     for c in candidates:
         if c and os.path.exists(c):
             return QIcon(c)
@@ -84,16 +87,31 @@ def main():
     profile = resolve_profile(profiles, app_cfg.get("active_profile"))
     # 修饰键与音键的间隔:配置缺失时回落到驱动默认值
     driver = KeyboardDriver(
-        settle_ms=float(player_cfg.get("modifier_settle_ms", KeyboardDriver.DEFAULT_SETTLE_MS)),
+        settle_ms=float(
+            player_cfg.get("modifier_settle_ms", KeyboardDriver.DEFAULT_SETTLE_MS)
+        ),
         release_settle_ms=float(
-            player_cfg.get("modifier_release_ms", KeyboardDriver.DEFAULT_RELEASE_SETTLE_MS)
+            player_cfg.get(
+                "modifier_release_ms", KeyboardDriver.DEFAULT_RELEASE_SETTLE_MS
+            )
         ),
     )
+    # 真人化节奏参数:从 config.yaml 读取,默认启用
+    humanize_cfg = player_cfg.get("humanize") or {}
+    humanize_enabled = bool(humanize_cfg.get("enabled", True))
+    humanize_params = None
+    if humanize_enabled:
+        humanize_params = HumanizeParams(
+            jitter_ms=float(humanize_cfg.get("jitter_ms", 8.0)),
+            breath_ms=float(humanize_cfg.get("breath_ms", 18.0)),
+            # 保持默认值,不在 config 暴露过多旋钮
+        )
     player = Player(
         keymap,
         driver=driver,
         logger=PlayLogger(os.path.join(data_dir, "logs")),
         latency_compensation_ms=float(player_cfg.get("latency_compensation_ms", 0)),
+        humanize=humanize_params,
     )
     # 事件演奏器(M4):三角洲档位走编译器 + EventPlayer,与默认 Player 共用同一驱动
     event_player = EventPlayer(
@@ -105,13 +123,17 @@ def main():
 
     # Windows 任务栏分组图标:显式 AppUserModelID 让任务栏显示自定义图标而非 Python 默认图标
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AutoMusicPlayer.App")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "AutoMusicPlayer.App"
+        )
     except Exception:
         pass
 
     app = QApplication(sys.argv)
     # 显式声明高 DPI 缩放策略:125%/150% 等缩放下按逻辑像素平滑渲染,避免打包环境差异
-    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     icon = app_icon()
     if icon:
         app.setWindowIcon(icon)
@@ -119,9 +141,16 @@ def main():
     icon_path = resource_path("app.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
-    win = MainWindow(cfg, db, keymap, player,
-                     config_path=config_path, profile=profile, profiles=profiles,
-                     event_player=event_player)
+    win = MainWindow(
+        cfg,
+        db,
+        keymap,
+        player,
+        config_path=config_path,
+        profile=profile,
+        profiles=profiles,
+        event_player=event_player,
+    )
     win.show()
     sys.exit(app.exec())
 

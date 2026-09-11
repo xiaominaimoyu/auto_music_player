@@ -13,8 +13,8 @@ android {
         applicationId = "com.automusic.player"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.1.2"
+        versionCode = 4
+        versionName = "1.2.0"
     }
 
     buildTypes {
