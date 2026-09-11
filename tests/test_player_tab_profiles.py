@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from core.profile import load_profiles
-from gui.player_tab import _update_active_profile, build_event_plan
+from gui.player_tab import PlayerTab, _update_active_profile, build_event_plan
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILES_DIR = os.path.join(REPO_ROOT, "profiles")
@@ -128,6 +128,62 @@ class TestUpdateActiveProfile(unittest.TestCase):
         text = open(path, encoding="utf-8").read()
         self.assertIn("app:\n", text)
         self.assertIn("active_profile: default", text)
+
+
+class _FakePlayer:
+    """演奏器替身:只记录 stop 调用,可伪装播放状态。"""
+
+    def __init__(self):
+        self.stop_calls = 0
+        self.playing = False
+
+    @property
+    def is_playing(self):
+        return self.playing
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+class TestDualPathStop(unittest.TestCase):
+    """回归:三角洲档位走 EventPlayer 时,停止按钮/F8/焦点暂停必须能停它。
+
+    历史缺陷:_stop/_pause_for_focus 只调 Player.stop(),EventPlayer 播放中
+    点停止与按 F8 全部失效。用 __new__ 绕过 QWidget 初始化,只测纯逻辑。
+    """
+
+    def _make_tab(self, player, event_player):
+        tab = PlayerTab.__new__(PlayerTab)
+        tab._player = player
+        tab._event_player = event_player
+        return tab
+
+    def test_stop_all_stops_event_player(self):
+        p, ep = _FakePlayer(), _FakePlayer()
+        ep.playing = True
+        self._make_tab(p, ep)._stop_all()
+        self.assertEqual(ep.stop_calls, 1, "EventPlayer 播放中必须被停止")
+        self.assertEqual(p.stop_calls, 1, "双停幂等:闲置的 Player 停一次无害")
+
+    def test_stop_all_without_event_player(self):
+        """默认注入下 event_player 可能为 None,不得 AttributeError。"""
+        p = _FakePlayer()
+        self._make_tab(p, None)._stop_all()
+        self.assertEqual(p.stop_calls, 1)
+
+    def test_any_playing_covers_both_paths(self):
+        ep = _FakePlayer()
+        tab = self._make_tab(_FakePlayer(), ep)
+        self.assertFalse(tab._any_playing())
+        ep.playing = True
+        self.assertTrue(tab._any_playing(), "EventPlayer 播放中 = 任一路径在播")
+
+    def test_any_playing_legacy_player_alone(self):
+        p = _FakePlayer()
+        tab = self._make_tab(p, None)
+        self.assertFalse(tab._any_playing())
+        p.playing = True
+        self.assertTrue(tab._any_playing())
 
 
 if __name__ == "__main__":

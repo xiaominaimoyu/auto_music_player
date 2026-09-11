@@ -209,7 +209,14 @@ class MainWindow(QMainWindow):
         self.library_tab.go_play.connect(self._go_play)
 
         hotkey = str(cfg.get("player", {}).get("stop_hotkey", "F8")).lower()
-        self._hotkey_listener = pk.GlobalHotKeys({f"<{hotkey}>": player.stop})
+
+        def _hotkey_stop():
+            # 双演奏路径都要停:三角洲档位走 EventPlayer,只停 Player 会失效
+            player.stop()
+            if event_player is not None:
+                event_player.stop()
+
+        self._hotkey_listener = pk.GlobalHotKeys({f"<{hotkey}>": _hotkey_stop})
         self._hotkey_listener.start()
 
         # 退出清理挂在 aboutToQuit(事件循环仍存活)而非 closeEvent:
@@ -228,6 +235,9 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._player.shutdown()
+        # 事件演奏器同步收尾:三角洲档位演奏中退出时同样保证按键释放
+        if self._event_player is not None:
+            self._event_player.shutdown()
 
     def _build_ui(self):
         root = QWidget()

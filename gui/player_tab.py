@@ -325,7 +325,7 @@ class PlayerTab(QWidget):
         self.info_name.setText(score["name"])
         self.info_count.setText(str(len(score["notes"])))
         self.info_duration.setText(f"{self._estimate_seconds(score['notes'], self.bpm_spin.value())} 秒")
-        self.play_btn.setEnabled(not self._player.is_playing)
+        self.play_btn.setEnabled(not self._any_playing())
 
     def _clear_pause(self):
         """回到未开始态:清空暂停进度与按钮状态。"""
@@ -433,6 +433,24 @@ class PlayerTab(QWidget):
             self.state_label.setText(f"演奏中 BPM {bpm}")
             self.progress_state.setText("演奏中...")
 
+    # ---------- 双路径统一控制(21键 Player / 事件 EventPlayer) ----------
+
+    def _any_playing(self) -> bool:
+        """任一演奏路径(默认档位 Player / 三角洲档位 EventPlayer)正在播放。"""
+        if self._player.is_playing:
+            return True
+        return self._event_player is not None and self._event_player.is_playing
+
+    def _stop_all(self):
+        """停止所有演奏路径:停止按钮 / F8 热键 / 焦点丢失 / 退出清理统一走这里。
+
+        历史缺陷:各停止点只调 Player.stop(),三角洲档位走 EventPlayer 时
+        停止按钮与 F8 全部失效(谁在播停谁才是对的,但双停最简单且幂等)。
+        """
+        self._player.stop()
+        if self._event_player is not None:
+            self._event_player.stop()
+
     def _stop(self):
         timer = getattr(self, "_countdown_timer", None)
         if timer is not None and timer.isActive():
@@ -441,7 +459,7 @@ class PlayerTab(QWidget):
             self.stop_btn.setEnabled(False)
             self.progress_state.setText("已取消")
             return
-        self._player.stop()
+        self._stop_all()
         self.progress_state.setText("正在暂停...")
 
     # ---------- 焦点检测 ----------
@@ -466,7 +484,7 @@ class PlayerTab(QWidget):
         self._focus_timer.start()
 
     def _check_focus(self):
-        if not self._player.is_playing:
+        if not self._any_playing():
             self._focus_timer.stop()
             return
         if self._policy is None:
@@ -483,7 +501,7 @@ class PlayerTab(QWidget):
     def _pause_for_focus(self):
         self._focus_timer.stop()
         self._focus_lost = True
-        self._player.stop()
+        self._stop_all()
         self.progress_state.setText("目标窗口失去焦点,正在暂停...")
 
     def _prompt_focus_recover(self):
@@ -529,7 +547,7 @@ class PlayerTab(QWidget):
     def rearm_focus_watch(self):
         """从小窗还原到主窗时恢复焦点检测(仅演奏中生效)。"""
         self._mini_mode = False
-        if self._player.is_playing:
+        if self._any_playing():
             self._start_focus_watch()
 
     def snapshot_for_mini(self) -> dict:
