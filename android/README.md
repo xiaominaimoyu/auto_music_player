@@ -12,11 +12,11 @@
 | 桌面版(core/) | 安卓版(android/app/src/main/java/com/automusic/player/) | 说明 |
 |---|---|---|
 | parser.py | core/JianpuParser.kt | 简谱解析,协议一致 |
-| recognizer.py | core/recognizer/ | OkHttp SSE 流式,prompt 复用 |
+| prompt.py | core/Prompt.kt | 外部 AI 识别提示词,协议一致 |
+| humanize.py | core/Humanize.kt | 真人化节奏塑形,规则一致 |
 | database.py | core/db/ | Room(SQLite) |
-| settings_store.py | core/settings/SettingsStore.kt | DataStore |
 | keymap.py | core/KeyPointMap.kt | 音符 → **屏幕坐标**(归一化 0..1) |
-| player.py | core/PlayerEngine.kt | 协程 + 绝对时钟调度 |
+| player.py | core/PlayerEngine.kt | 协程 + 绝对时钟调度 + 真人化 |
 | keyboard_driver.py(SendInput) | input/TouchInjector.kt + AmpAccessibilityService | 无障碍手势注入 |
 | gui/(PyQt6) | ui/(Jetpack Compose) | 暗色琥珀金主题对齐 |
 
@@ -44,11 +44,9 @@ cd android
 
 1. **标定**:导入游戏演奏界面截图(鸣潮/原神内置按真机实测的默认布局),
    微调 21 个琴键点位(或"四角推算"自动插值),保存;可用"测试点击"验证落点
-2. **模型设置**(可选):添加 OpenAI 兼容多模态供应商 → 测试 → 设为激活;不配置则用内置样例
-3. **识别**(两种途径任选):
-   - 在线识别:导入乐谱图 → 开始识别 → 校对 → 保存入库
-   - 外部 AI 识别(免配置):点「复制提示词」→ 粘贴到任意外部 AI 工具并附上乐谱图片 → 把返回的简谱粘贴到结果框 → 校对 → 保存入库
-4. **演奏**:选谱 → 选布局 → 调 BPM → 开始演奏 → 3 秒倒计时内切到游戏
+2. **识别**(免配置,纯粘贴):「识别」页点「复制提示词」→ 粘贴到任意外部 AI 工具
+   (如 ChatGPT / 豆包 / Kimi)并附上乐谱图片 → 把返回的简谱粘贴回结果框 → 校对 → 保存入库
+3. **演奏**:选谱 → 选布局 → 调 BPM →(可选)开启真人化演奏 → 开始演奏 → 3 秒倒计时内切到游戏
 
 ## 技术要点
 
@@ -58,6 +56,8 @@ cd android
   App 以悬浮小窗/分屏运行时坐标依然正确
 - **时序**:协程 + 绝对时钟调度(`delayUntil`),每音符周期严格 = 时值 + gap,
   修正了桌面版"周期 = dur×hold + gap"的节奏偏快问题
+- **真人化演奏**(默认开启):起音正态微偏移、长短音动态按住、乐句呼吸与大跳进换指,
+  每次演奏独立随机,更贴近真人;链式防叠键保证不重叠按键,关闭后回到严格等间隔机械节奏
 - **多布局**:鸣潮/原神预设按真机截图圆点检测生成,支持自建布局与四角双线性插值
 - **保活**:演奏期间启动前台服务(`specialUse`),防止进程被杀中断演奏
 

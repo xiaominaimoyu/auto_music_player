@@ -11,11 +11,13 @@
 断点语义:音符被中途截断时断点留在该音符,续播时重放;音符间歇期停止则记为已完成。
 """
 
+import random
 import threading
 import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from core.humanize import HumanizeParams, plan_timings
 from core.keyboard_driver import KeyboardDriver
 
 
@@ -25,12 +27,14 @@ class Player(QObject):
     paused = pyqtSignal(int, int)        # 停止(暂停)时发出: 已完成音符数, 总数
     error_occurred = pyqtSignal(str)     # 演奏过程中的错误信息
 
-    def __init__(self, keymap, driver=None, logger=None, latency_compensation_ms=0, parent=None):
+    def __init__(self, keymap, driver=None, logger=None, latency_compensation_ms=0,
+                 humanize=None, parent=None):
         super().__init__(parent)
         self._keymap = keymap
         self._driver = driver or KeyboardDriver()
         self._logger = logger
         self.latency_compensation_ms = max(0.0, float(latency_compensation_ms))
+        self._humanize = humanize      # HumanizeParams;None = 关闭真人化
         self._stop_event = threading.Event()
         self._thread = None
         # 最近一次演奏的统计(P0-4 可观测性);GUI 在 finished 后读取
@@ -95,6 +99,14 @@ class Player(QObject):
         error = None
         comp_s = max(0.0, min(self.latency_compensation_ms, 200.0)) / 1000.0
         gap_s = (gap_ms if gap_ms > 0 else 0.0) / 1000.0
+        # 真人化节奏:每次演奏独立随机(同一谱每次演奏都有细微差异,像真人);
+        # None 时全部按 0 偏移 + 固定 hold_ratio,与历史机械行为完全一致
+        if self._humanize is not None:
+            timings = plan_timings(notes, self._humanize, random.Random())
+            min_gap_s = self._humanize.min_gap_ms / 1000.0
+        else:
+            timings = None
+            min_gap_s = 0.0
         if self._logger:
             self._logger.start(score_name, bpm, total)
 
@@ -103,6 +115,7 @@ class Player(QObject):
         pre_s = sum(n["dur"] * beat_ms / 1000.0 + gap_s for n in notes[:start_index])
         t0 = time.perf_counter() - pre_s
         cursor_s = pre_s
+        prev_release_s = None    # 上一发音音符的实际释放时刻(链式防叠键下限)
         prev_start_t = None    # 上一音符实际开始时刻(测量实际间隔)
         prev_sched_ms = None   # 上一音符到本音符的理论间隔(dur + gap)
         try:
@@ -113,7 +126,15 @@ class Player(QObject):
                 dur_ms = note["dur"] * beat_ms
                 keys = [self._keymap.key_for(nid) for nid in note["notes"]]
                 keys = [k for k in keys if k]
-                wait_s = t0 + cursor_s - comp_s - time.perf_counter()
+                if timings is not None:
+                    off_s, ratio_i = timings[i]
+                else:
+                    off_s, ratio_i = 0.0, hold_ratio
+                # 目标起音 = 理想时刻 + 人性化偏移;链式保护:不早于上一音完全释放
+                target_s = t0 + cursor_s + off_s
+                if prev_release_s is not None and keys:
+                    target_s = max(target_s, prev_release_s + min_gap_s)
+                wait_s = target_s - comp_s - time.perf_counter()
                 if wait_s > 0:
                     interrupted = self._stop_event.wait(wait_s)
                 else:
@@ -129,8 +150,9 @@ class Player(QObject):
                 try:
                     if keys:
                         self._driver.press_chord(keys)
-                        hold_interrupted = self._stop_event.wait(dur_ms * hold_ratio / 1000.0)
+                        hold_interrupted = self._stop_event.wait(dur_ms * ratio_i / 1000.0)
                         self._driver.release_chord(keys)
+                        prev_release_s = target_s + dur_ms * ratio_i / 1000.0
                         if hold_interrupted:
                             break  # 按住期被截断:断点留在 i,续播时重放该音符(不记日志)
                     # 休止:时值由下一音符的绝对开始点体现,无需单独等待
@@ -149,7 +171,8 @@ class Player(QObject):
                                           sched_ms=prev_sched_ms, actual_ms=actual_ms, dev_ms=dev_ms)
                 self.progress.emit(done, total)
                 prev_start_t = start_t
-                prev_sched_ms = dur_ms + (gap_ms if gap_ms > 0 else 0.0)
+                if keys:
+                    prev_sched_ms = dur_ms + (gap_ms if gap_ms > 0 else 0.0)
                 cursor_s += dur_ms / 1000.0 + gap_s
             if self._stop_event.is_set():
                 # 停止 = 暂停:进度经 paused 信号带出,调用方可继续或重置

@@ -1,8 +1,8 @@
-package com.automusic.player.core.recognizer
+package com.automusic.player.core
 
 /**
- * 大模型输出协议(与桌面版 recognizer.py 的 JIANPU_PROMPT 一致):
- * 让模型把任意简谱转成规范化文本。
+ * 简谱识别输出协议(与桌面版 core/prompt.py 的 JIANPU_PROMPT 一致):
+ * 引导外部 AI 工具把任意简谱图/文转成规范化文本,供解析器直接消费。
  */
 object Prompt {
     const val JIANPU_PROMPT: String = """你是一位简谱识别专家。请把输入的乐谱内容转成以下严格格式的简谱文本:
@@ -18,7 +18,7 @@ object Prompt {
 示例输入(图片或文字):[简谱]
 示例输出:1 1 5 5 6 6 5- 4 4 3 3 2 2 1-"""
 
-    /** 内置样例(未配置供应商时端到端跑通流程用)。 */
+    /** 内置样例(空库时端到端跑通流程用)。 */
     const val SAMPLE_JIANPU: String =
         "1 1 5, 5, 6 6 5'- 4 4 3 3 2 2 1- 0 0 [1' 3' 5']- 1 2 3_ 3_ 5_· 5_"
 }

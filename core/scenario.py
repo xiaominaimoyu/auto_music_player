@@ -47,6 +47,10 @@ class Scenario:
     name = "场景"
     interrupt_mode = "pause"
     abort_hint = ""
+    # 是否启用真人化节奏塑形:自由演奏追求自然听感;
+    # 识别类任务(S2)宁可严格等间隔——游戏按固定窗口采样音符,
+    # 起音偏移会降低识别率,故关闭
+    humanize = True
 
     def intervals(self) -> dict:
         """本场景对 CompileParams 的间隔覆盖项。"""
@@ -96,6 +100,7 @@ class NpcQuestScenario(Scenario):
     name = "NPC 听旋律任务"
     interrupt_mode = "abort"
     abort_hint = "演奏被中断,请重新听 NPC 示范后再演奏"
+    humanize = False  # 识别任务:严格等间隔,保证游戏采样窗口命中
 
     def __init__(self, submit_key: str = DEFAULT_SUBMIT_KEY,
                  submit_hold_ms: float = DEFAULT_SUBMIT_HOLD_MS,

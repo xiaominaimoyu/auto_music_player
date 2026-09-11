@@ -38,12 +38,6 @@
             "target": "pages/player.html",
             "targetPageId": "page-player",
             "hideEdge": false
-          },
-          {
-            "domId": "nav-settings",
-            "target": "pages/settings.html",
-            "targetPageId": "page-settings",
-            "hideEdge": false
           }
         ]
       }
@@ -86,12 +80,6 @@
             "target": "pages/player.html",
             "targetPageId": "page-player",
             "hideEdge": false
-          },
-          {
-            "domId": "nav-settings",
-            "target": "pages/settings.html",
-            "targetPageId": "page-settings",
-            "hideEdge": false
           }
         ]
       }
@@ -133,53 +121,6 @@
             "domId": "nav-player",
             "target": "pages/player.html",
             "targetPageId": "page-player",
-            "hideEdge": true
-          },
-          {
-            "domId": "nav-settings",
-            "target": "pages/settings.html",
-            "targetPageId": "page-settings",
-            "hideEdge": false
-          }
-        ]
-      }
-    },
-    {
-      "id": "page-settings",
-      "title": "模型设置",
-      "type": "page",
-      "version": 1,
-      "createdAt": 1724860800000,
-      "canvasData": {
-        "x": 1440,
-        "y": 0,
-        "group": 0
-      },
-      "devMetadata": {
-        "htmlSrc": "pages/settings.html",
-        "interactions": [
-          {
-            "domId": "nav-upload",
-            "target": "pages/upload.html",
-            "targetPageId": "page-upload",
-            "hideEdge": false
-          },
-          {
-            "domId": "nav-library",
-            "target": "pages/library.html",
-            "targetPageId": "page-library",
-            "hideEdge": false
-          },
-          {
-            "domId": "nav-player",
-            "target": "pages/player.html",
-            "targetPageId": "page-player",
-            "hideEdge": false
-          },
-          {
-            "domId": "nav-settings",
-            "target": "pages/settings.html",
-            "targetPageId": "page-settings",
             "hideEdge": true
           }
         ]

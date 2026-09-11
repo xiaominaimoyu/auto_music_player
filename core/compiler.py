@@ -207,8 +207,12 @@ def _flatten(elements, params: CompileParams):
     return plan, degradations, skipped
 
 
-def compile_score(elements, params: CompileParams) -> CompileResult:
+def compile_score(elements, params: CompileParams, timings=None) -> CompileResult:
     """把 IR 序列编译成输入事件序列。
+
+    timings(可选):与 elements 等长的真人化塑形结果,由
+    `core.humanize.plan_timings` 产出——每元素 (offset_ms, hold_ratio);
+    休止元素与 None 时保持机械时序(hold 用 params.hold_ratio)。
 
     修饰键采用「相邻同态保持按住」策略:只有当相邻音符的修饰键不同时才释放再按下。
     否则同一修饰键会在 0ms 内 release→press,游戏极可能漏掉重新按下(与 settle 过短同类)。
@@ -222,6 +226,7 @@ def compile_score(elements, params: CompileParams) -> CompileResult:
     result = CompileResult(degradations=degradations, skipped=skipped)
     cursor = 0.0
     held = None
+    prev_kb_up = None   # 上一音符音键抬起时刻(链式防叠键下限)
 
     for i, item in enumerate(plan):
         if item["kind"] == "rest":
@@ -232,8 +237,17 @@ def compile_score(elements, params: CompileParams) -> CompileResult:
             cursor += item["dur"] * beat_ms + gap
             continue
 
+        if timings is not None:
+            off_ms, ratio_i = timings[item["index"]]
+        else:
+            off_ms, ratio_i = 0.0, params.hold_ratio
+        t = cursor + float(off_ms)
+        # 链式防叠键:仅真人化模式需要——偏移可能把起音提前到上一音释放之前;
+        # 机械模式下 cursor 已保证 t ≥ 上一音释放,保持精确时序不变
+        if timings is not None and prev_kb_up is not None:
+            t = max(t, prev_kb_up + 1.0)
+
         button = item["button"]
-        t = cursor
         if button and button != held:
             if held:                      # 切换修饰键:先松旧的,留足间隔再按新的
                 result.events.append(InputEvent(t, "mouse", held, "up"))
@@ -243,7 +257,7 @@ def compile_score(elements, params: CompileParams) -> CompileResult:
             held = button
 
         dur_ms = item["dur"] * beat_ms
-        hold = dur_ms * float(params.hold_ratio)
+        hold = dur_ms * float(ratio_i)
         if params.max_hold_ms is not None and hold > float(params.max_hold_ms):
             hold = float(params.max_hold_ms)
             result.degradations.append(Degradation(
@@ -252,6 +266,7 @@ def compile_score(elements, params: CompileParams) -> CompileResult:
         t_up = t + hold
         result.events.append(InputEvent(t, "kb", item["key"], "down"))
         result.events.append(InputEvent(t_up, "kb", item["key"], "up"))
+        prev_kb_up = t_up
 
         release_end = t_up
         nxt = plan[i + 1] if i + 1 < len(plan) else None

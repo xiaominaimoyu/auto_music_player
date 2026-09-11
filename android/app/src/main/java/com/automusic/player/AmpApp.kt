@@ -6,8 +6,6 @@ import androidx.room.Room
 import com.automusic.player.calib.LayoutStore
 import com.automusic.player.core.PlayerEngine
 import com.automusic.player.core.db.ScoreDb
-import com.automusic.player.core.recognizer.RecognizerFactory
-import com.automusic.player.core.settings.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,12 +18,8 @@ class AppContainer(context: Context) {
         .fallbackToDestructiveMigration()
         .build()
 
-    val settings = SettingsStore(context)
     val layouts = LayoutStore(context)
     val player = PlayerEngine(appScope)
-
-    /** 按当前激活供应商创建识别器;无配置返回 null(用内置样例)。 */
-    suspend fun createRecognizer() = RecognizerFactory.create(settings.getActiveProvider())
 
     /** 播放页 -> 库页联动的当前选中乐谱。 */
     var selectedScoreId: Long = -1L

@@ -8,7 +8,6 @@ from core.database import ScoreDB
 from core.keymap import KeyMap
 from core.parser import parse_jianpu
 from core.player import Player
-from core.recognizer import StubRecognizer
 
 MAPPING = {
     "high": ["Q", "W", "E", "R", "T", "Y", "U"],
@@ -60,6 +59,8 @@ class TestKeyMap(unittest.TestCase):
 
 
 class TestPipeline(unittest.TestCase):
+    """粘贴识别路径端到端:外部 AI 输出格式的简谱 -> 解析 -> 入库 -> 读回。"""
+
     def setUp(self):
         self.db = ScoreDB("data/test_e2e.db")
 
@@ -68,83 +69,25 @@ class TestPipeline(unittest.TestCase):
         if os.path.exists("data/test_e2e.db"):
             os.remove("data/test_e2e.db")
 
-    def test_stub_recognize_parse_store_roundtrip(self):
-        rec = StubRecognizer()
-        text = rec.recognize_image("whatever.png")
+    def test_pasted_jianpu_parse_store_roundtrip(self):
+        """模拟外部 AI 工具返回的规范化简谱,直接粘贴解析入库。"""
+        text = "1 1 5, 5, 6 6 5'- 4 4 3 3 2 2 1- 0 0 [1' 3' 5']-"
         notes = parse_jianpu(text)
         self.assertGreater(len(notes), 0)
+        self.assertEqual(notes[0], {"notes": ["mid_1"], "dur": 1.0})
+        self.assertEqual(notes[2], {"notes": ["low_5"], "dur": 1.0})
+        self.assertEqual(notes[6], {"notes": ["high_5"], "dur": 2.0})
         score_id = self.db.add_score(
-            "测试曲", notes, raw_text=text, source_type="image", bpm_default=120
+            "测试曲", notes, raw_text=text, source_type="manual", bpm_default=120
         )
         score = self.db.get_score(score_id)
         self.assertEqual(score["notes"], notes)
         self.assertEqual(score["name"], "测试曲")
         self.assertEqual(score["bpm_default"], 120)
+        self.assertEqual(score["source_type"], "manual")
         self.assertEqual(len(self.db.list_scores()), 1)
         self.db.delete_score(score_id)
         self.assertEqual(len(self.db.list_scores()), 0)
-
-
-class TestImageCompress(unittest.TestCase):
-    def test_compress_large_image(self):
-        import io
-
-        from PIL import Image
-
-        from core.recognizer import IMAGE_MAX_SIDE, OpenAIStyleRecognizer
-
-        img = Image.new("RGB", (4000, 3000), (255, 255, 255))
-        path = "data/test_big.jpg"
-        img.save(path, "JPEG", quality=95)
-        try:
-            data, mime = OpenAIStyleRecognizer._compress_image(path)
-            compressed = Image.open(io.BytesIO(data))
-            self.assertEqual(mime, "image/jpeg")
-            self.assertLessEqual(max(compressed.size), IMAGE_MAX_SIDE)
-            self.assertLess(len(data), 1024 * 1024)
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
-
-    def test_small_jpeg_passthrough(self):
-        from PIL import Image
-
-        from core.recognizer import OpenAIStyleRecognizer
-
-        img = Image.new("RGB", (800, 600), (255, 255, 255))
-        path = "data/test_small.jpg"
-        img.save(path, "JPEG", quality=90)
-        try:
-            data, mime = OpenAIStyleRecognizer._compress_image(path)
-            self.assertEqual(mime, "image/jpeg")
-            self.assertTrue(len(data) > 0)
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
-
-
-class TestDocxExtract(unittest.TestCase):
-    def test_extract_docx(self):
-        import zipfile
-
-        from gui.upload_tab import _extract_text
-
-        doc_xml = (
-            '<?xml version="1.0"?>'
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            "<w:body>"
-            "<w:p><w:r><w:t>1 1 5 5</w:t></w:r></w:p>"
-            "<w:p><w:r><w:t>6 6 5-</w:t></w:r></w:p>"
-            "</w:body></w:document>"
-        )
-        path = "data/test_extract.docx"
-        with zipfile.ZipFile(path, "w") as z:
-            z.writestr("word/document.xml", doc_xml)
-        try:
-            self.assertEqual(_extract_text(path), "1 1 5 5\n6 6 5-")
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
 
 
 class TestPlayer(unittest.TestCase):

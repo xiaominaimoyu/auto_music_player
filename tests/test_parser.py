@@ -64,9 +64,10 @@ class TestParser(unittest.TestCase):
         self.assertEqual([n["notes"][0] for n in r], ["low_5", "low_6"])
 
     def test_sample(self):
-        from core.recognizer import SAMPLE_JIANPU
+        """外部 AI 返回的典型规范化简谱(含高低音/附点/和弦/休止)全量解析。"""
+        sample = "1 1 5, 5, 6 6 5'- 4 4 3 3 2 2 1- 0 0 [1' 3' 5']- 1 2 3_ 3_ 5_· 5_"
 
-        r = parse_jianpu(SAMPLE_JIANPU)
+        r = parse_jianpu(sample)
         self.assertEqual(len(r), 23)
         self.assertIn({"notes": ["high_5"], "dur": 2.0}, r)
         self.assertIn({"notes": ["high_1", "high_3", "high_5"], "dur": 2.0}, r)

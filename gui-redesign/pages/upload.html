@@ -271,15 +271,6 @@ body {
   border-radius: var(--r-lg); padding: 24px; margin-bottom: 24px;
 }
 .section-title { font-size: 14px; font-weight: 600; color: var(--ink); margin-bottom: 16px; }
-.upload-zone {
-  border: 2px dashed var(--line-2); border-radius: var(--r-lg);
-  padding: 40px 24px; text-align: center; cursor: pointer;
-  transition: border-color 160ms, background 160ms;
-}
-.upload-zone:hover { border-color: var(--brand-3); background: var(--brand-soft); }
-.upload-zone .zone-icon { width: 40px; height: 40px; color: var(--ink-3); margin: 0 auto 12px; }
-.upload-zone .zone-text { font-size: 14px; color: var(--ink-2); }
-.upload-zone .zone-hint { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
 .btn {
   display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px;
   border-radius: var(--r-md); font-size: 14px; font-weight: 500;
@@ -331,11 +322,6 @@ textarea.input-field { resize: vertical; min-height: 80px; font-family: var(--fo
 .section-title-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .section-title-row .section-title { margin-bottom: 0; }
 .section-subtitle { font-size: 12px; color: var(--ink-3); margin-top: 4px; line-height: 1.5; }
-.file-info-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
-.file-path {
-  font-size: 13px; color: var(--ink-2); font-family: var(--font-mono);
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 .save-row { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
 .field-stack { display: flex; flex-direction: column; gap: 6px; }
 .field-stack .label { margin-bottom: 0; }
@@ -428,12 +414,8 @@ textarea.input-field { resize: vertical; min-height: 80px; font-family: var(--fo
               <i data-lucide="play-circle"></i>
               <span>演奏控制</span>
             </a>
-            <a href="settings.html" data-nav-key="settings" class="nav-item" data-dom-id="nav-settings">
-              <i data-lucide="settings"></i>
-              <span>模型设置</span>
-            </a>
           </nav>
-          <div class="sidebar-footer">v1.0</div>
+          <div class="sidebar-footer">v1.1.1</div>
         </aside>
         <!-- Main area -->
         <div class="main-area">
@@ -446,56 +428,46 @@ textarea.input-field { resize: vertical; min-height: 80px; font-family: var(--fo
           </header>
           <div class="content-scroll" data-scroll-region="primary">
             <div class="content-inner">
-              <!-- Section 1: Upload Zone -->
-              <section class="section-card" id="upload-zone">
+              <!-- Section 1: Copy Recognition Prompt -->
+              <section class="section-card" id="prompt-section">
                 <div class="section-title-row">
                   <span class="step-badge">1</span>
-                  <h2 class="section-title">上传乐谱文件</h2>
+                  <div>
+                    <h2 class="section-title">复制识别提示词</h2>
+                    <div class="section-subtitle">无需配置任何 API Key：点「复制提示词」粘贴到任意外部 AI 工具（ChatGPT / 豆包 / Kimi 等均可），附上乐谱图片发送，即可得到规范化简谱</div>
+                  </div>
                 </div>
-                <div class="upload-zone" role="button" tabindex="0" aria-label="选择乐谱文件">
-                  <i data-lucide="file-up" class="zone-icon"></i>
-                  <div class="zone-text">选择乐谱文件</div>
-                  <div class="zone-hint">支持 jpg / png / webp / bmp 图片，md / txt / docx 文档</div>
-                </div>
-                <div class="file-info-row">
-                  <span class="file-path">未选择文件</span>
+                <div class="btn-row">
+                  <button class="btn btn-primary" type="button">
+                    <i data-lucide="copy"></i>复制提示词
+                  </button>
                   <button class="btn btn-secondary" type="button">
-                    <i data-lucide="folder-open"></i>选择文件
+                    <i data-lucide="sparkles"></i>填入内置样例
                   </button>
                 </div>
               </section>
 
-              <!-- Section 2: Recognition & Parse -->
-              <section class="section-card" id="recognition-controls">
+              <!-- Section 2: Paste & Parse -->
+              <section class="section-card" id="paste-section">
                 <div class="section-title-row">
                   <span class="step-badge">2</span>
                   <div>
-                    <h2 class="section-title">识别与解析</h2>
-                    <div class="section-subtitle">步骤 2 识别乐谱文本 · 步骤 3 解析为校对表格</div>
+                    <h2 class="section-title">粘贴简谱并解析</h2>
+                    <div class="section-subtitle">把外部 AI 返回的简谱粘贴到下方（支持手动输入与修改），解析为校对表格</div>
                   </div>
                 </div>
-                <div class="btn-row">
-                  <button class="btn btn-primary" type="button" disabled>
-                    <i data-lucide="scan-text"></i>开始识别
-                  </button>
-                  <button class="btn btn-secondary" type="button" disabled>
+                <textarea class="input-field" id="raw-text" rows="3" spellcheck="false" placeholder="外部 AI 工具识别出的简谱直接粘贴到这里…">1 1 5, 5, 6 6 5'- 4 4 3 3 2 2 1-</textarea>
+                <div class="btn-row" style="margin-top: 12px;">
+                  <button class="btn btn-primary" type="button">
                     <i data-lucide="table"></i>解析到校对表格
                   </button>
                 </div>
               </section>
 
-              <!-- Section 3: Raw Text Editor -->
-              <section class="section-card" id="raw-text-editor">
-                <div class="section-title-row">
-                  <label class="section-title" for="raw-text">识别结果（可手动修改）</label>
-                </div>
-                <textarea class="input-field" id="raw-text" rows="3" spellcheck="false">1 1 5, 5, 6 6 5'- 4 4 3 3 2 2 1-</textarea>
-              </section>
-
-              <!-- Section 4: Proofreading Table -->
+              <!-- Section 3: Proofreading Table -->
               <section class="section-card" id="proofread-table">
                 <div class="section-title-row">
-                  <span class="step-badge">4</span>
+                  <span class="step-badge">3</span>
                   <div>
                     <h2 class="section-title">校对表格</h2>
                     <div class="section-subtitle">音符列可写和弦，如 high_1,mid_3；时值单位：拍</div>
@@ -533,10 +505,10 @@ textarea.input-field { resize: vertical; min-height: 80px; font-family: var(--fo
                 </div>
               </section>
 
-              <!-- Section 5: Save to Library -->
+              <!-- Section 4: Save to Library -->
               <section class="section-card" id="save-section">
                 <div class="section-title-row">
-                  <span class="step-badge">5</span>
+                  <span class="step-badge">4</span>
                   <h2 class="section-title">保存到乐谱库</h2>
                 </div>
                 <div class="save-row">
@@ -565,7 +537,7 @@ textarea.input-field { resize: vertical; min-height: 80px; font-family: var(--fo
           </div>
           <div class="status-right">
             <span class="status-item"><i data-lucide="zap"></i>F8 紧急停止</span>
-            <span>v1.0</span>
+            <span>v1.1.1</span>
           </div>
         </div>
     </main>

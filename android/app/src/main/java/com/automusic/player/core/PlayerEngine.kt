@@ -21,6 +21,9 @@ import kotlinx.coroutines.launch
  *
  * 时序:每音符周期严格等于 时值 + gap;按住时长 = 时值 × hold_ratio
  * (由 TouchInjector.dispatchChord 同步完成"按下-按住-抬起")。
+ *
+ * 真人化(humanize 非 null):起音叠加微偏移、长短音动态按住、乐句呼吸,
+ * 每次演奏独立随机,贴近真人;链式防叠键保证实际起音不早于上一音完全释放。
  */
 class PlayerEngine(private val scope: kotlinx.coroutines.CoroutineScope) {
 
@@ -54,6 +57,7 @@ class PlayerEngine(private val scope: kotlinx.coroutines.CoroutineScope) {
         screenW: Int,
         screenH: Int,
         startIndex: Int = 0,
+        humanize: HumanizeParams? = null,
     ) {
         if (isPlaying) return
         job = scope.launch {
@@ -62,17 +66,32 @@ class PlayerEngine(private val scope: kotlinx.coroutines.CoroutineScope) {
             lastTotal = total
             var complete = true
             var errorMsg: String? = null
+            // 真人化塑形:每次演奏独立随机(细微差别,像真人);null = 机械等间隔
+            val timings = if (humanize != null) Humanize.planTimings(notes, humanize) else null
+            val minGapMs = humanize?.minGapMs ?: 0.0
             try {
                 var nextStart = SystemClock.uptimeMillis()
+                var prevRelease: Long? = null   // 上一发音音符完全释放时刻(链式防叠键下限)
                 for (idx in startIndex.coerceIn(0, total) until total) {
                     val note = notes[idx]
                     val durMs = note.dur * beatMs
-                    delayUntil(nextStart)
+                    val timing = timings?.get(idx)
+                    val offMs = timing?.offsetMs ?: 0.0
+                    val ratio = timing?.holdRatio ?: holdRatio
+                    // 目标起音 = 理想时刻 + 真人化偏移;链式保护:不早于上一音完全释放
+                    var target = nextStart + offMs.toLong()
+                    if (prevRelease != null && note.notes.isNotEmpty()) {
+                        val lower = prevRelease + Math.ceil(minGapMs).toLong()
+                        if (target < lower) target = lower
+                    }
+                    delayUntil(target)
 
                     val coords = KeyPointMap.coordsFor(note.notes, layout, screenW, screenH)
                     if (coords.isNotEmpty()) {
                         // 同步完成按下-按住-抬起;结束时保证无残留按键
-                        TouchInjector.dispatchChord(coords, (durMs * holdRatio).toLong())
+                        val holdMs = (durMs * ratio).toLong()
+                        TouchInjector.dispatchChord(coords, holdMs)
+                        prevRelease = target + holdMs
                         nextStart += (durMs + gapMs).toLong()
                     } else {
                         // 休止符:只占时值,不加 gap(与桌面版一致)

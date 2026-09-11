@@ -326,6 +326,32 @@ body {
   padding: 16px; background: var(--surface-2);
   border-radius: var(--r-md); margin-top: 16px;
 }
+
+/* Humanize Toggle */
+.humanize-row {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 16px; padding: 12px 16px;
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+}
+.toggle { position: relative; display: inline-flex; flex-shrink: 0; cursor: pointer; }
+.toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.toggle-track {
+  width: 40px; height: 22px; border-radius: var(--r-pill);
+  background: var(--surface-3); border: 1px solid var(--line-2);
+  display: flex; align-items: center; padding: 2px;
+  transition: background 160ms, border-color 160ms;
+}
+.toggle-thumb {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--ink-2);
+  transition: transform 160ms cubic-bezier(.2,.8,.2,1), background 160ms;
+}
+.toggle input:checked + .toggle-track { background: var(--brand-soft); border-color: var(--brand-3); }
+.toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(18px); background: var(--brand); }
+.humanize-text { display: flex; flex-direction: column; gap: 2px; }
+.humanize-title { font-size: 13px; font-weight: 500; color: var(--ink); }
+.humanize-desc { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
 .score-info .info-item { display: flex; flex-direction: column; gap: 2px; }
 .score-info .info-label { font-size: 12px; color: var(--ink-3); }
 .score-info .info-value { font-size: 15px; font-weight: 600; color: var(--ink); }
@@ -444,12 +470,8 @@ body {
               <i data-lucide="play-circle"></i>
               <span>演奏控制</span>
             </a>
-            <a href="settings.html" data-nav-key="settings" class="nav-item" data-dom-id="nav-settings">
-              <i data-lucide="settings"></i>
-              <span>模型设置</span>
-            </a>
           </nav>
-          <div class="sidebar-footer">v1.0</div>
+          <div class="sidebar-footer">v1.1.1</div>
         </aside>
         <div class="main-area">
           <header class="app-header">
@@ -494,6 +516,16 @@ body {
                   <div class="info-item">
                     <span class="info-label">预计时长</span>
                     <span class="info-value mono">8.4 秒</span>
+                  </div>
+                </div>
+                <div class="humanize-row">
+                  <label class="toggle" for="humanize-toggle">
+                    <input type="checkbox" id="humanize-toggle" checked>
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                  </label>
+                  <div class="humanize-text">
+                    <span class="humanize-title">真人化演奏</span>
+                    <span class="humanize-desc">起音微偏移 · 乐句呼吸 · 长短音动态按住，停顿与过渡更贴近真人演奏</span>
                   </div>
                 </div>
               </section>
@@ -542,7 +574,7 @@ body {
           </div>
           <div class="status-right">
             <span class="status-item"><i data-lucide="zap"></i>F8 紧急停止</span>
-            <span>v1.0</span>
+            <span>v1.1.1</span>
           </div>
         </div>
     </main>

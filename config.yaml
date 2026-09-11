@@ -6,24 +6,6 @@ app:
   # 可选值见 profiles/*.yaml;填错或缺失时回落到 default
   active_profile: default
 
-recognizer:
-  # provider: stub | openai_compatible
-  # stub  = 内置样例,用于跑通流程,不调用真实 API
-  # openai_compatible = 兼容 OpenAI 协议的多模态接口(通义/GLM/Kimi/OpenAI 均可用)
-  provider: stub
-  api_base: ""
-  api_key: ""
-  model: ""
-  # 识别超时(秒)
-  timeout: 120
-
-# AI 编谱建议(实验性):默认关闭;接口凭据复用模型设置页当前激活供应商
-advisor:
-  # 是否启用
-  enabled: false
-  # 编谱用模型名;留空 = 使用激活供应商的模型
-  model: ""
-
 keymap:
   # 高音 1-7
   high: [Q, W, E, R, T, Y, U]
@@ -49,6 +31,14 @@ player:
   stop_hotkey: F8
   # 系统输出延迟补偿(毫秒,延迟校准向导写入;0 = 不补偿)
   latency_compensation_ms: 0
+  # 真人化演奏节奏:起音微偏移 / 长短音动态按住 / 乐句呼吸,更贴近真人演奏
+  humanize:
+    # 是否启用(关闭后回到严格等间隔的机械节奏)
+    enabled: true
+    # 起音随机微偏移幅度(毫秒,正态分布 σ):真人不可能每个音都精准踩拍
+    jitter_ms: 8
+    # 乐句边界(长音或休止之后)追加的呼吸停顿(毫秒)
+    breath_ms: 18
   # 目标窗口焦点检测:演奏中失去目标窗口焦点时自动暂停(断点保留,可续播)
   focus_check:
     # 是否启用

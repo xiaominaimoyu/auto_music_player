@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.automusic.player.AppContainer
+import com.automusic.player.core.HumanizeParams
 import com.automusic.player.core.NoteCodec
 import com.automusic.player.core.ScreenMetrics
 import com.automusic.player.core.PlayerEngine
@@ -88,6 +90,7 @@ fun PlayScreen(container: AppContainer) {
     var bpm by remember { mutableStateOf(100f) }
     var holdRatio by remember { mutableStateOf(0.75f) }
     var gapMs by remember { mutableStateOf(20f) }
+    var humanizeOn by remember { mutableStateOf(true) }
 
     var countdown by remember { mutableStateOf<Int?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -151,6 +154,7 @@ fun PlayScreen(container: AppContainer) {
                 screenW = w,
                 screenH = h,
                 startIndex = startIndex,
+                humanize = if (humanizeOn) HumanizeParams() else null,
             )
         }
     }
@@ -280,8 +284,27 @@ fun PlayScreen(container: AppContainer) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("节奏参数", color = Brand, style = MaterialTheme.typography.titleSmall)
                 LabeledSlider("BPM:${bpm.toInt()}", bpm, 40f..240f) { bpm = it }
-                LabeledSlider("按住比例:%.2f".format(holdRatio), holdRatio, 0.5f..0.95f) { holdRatio = it }
+                if (humanizeOn) {
+                    Text(
+                        "真人化已开启:长短音动态按住,按住比例由节奏自动分配",
+                        color = Ink2,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    LabeledSlider("按住比例:%.2f".format(holdRatio), holdRatio, 0.5f..0.95f) { holdRatio = it }
+                }
                 LabeledSlider("间隔:${gapMs.toInt()} ms", gapMs, 0f..80f) { gapMs = it }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("真人化演奏", color = Ink2, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "节奏微偏移 · 乐句呼吸 · 动态按住,更贴近真人",
+                            color = Ink3,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(checked = humanizeOn, onCheckedChange = { humanizeOn = it })
+                }
             }
         }
 

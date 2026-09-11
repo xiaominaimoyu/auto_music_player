@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
 
 from gui.library_tab import LibraryTab
 from gui.player_tab import PlayerTab
-from gui.settings_tab import SettingsTab
 from gui.theme import (
     BRAND,
     INK,
@@ -45,7 +44,6 @@ NAV_ITEMS = [
     ("上传识别", "↑"),
     ("乐谱库", "♪"),
     ("演奏控制", "▶"),
-    ("模型设置", "⚙"),
 ]
 
 TITLE_BAR_HEIGHT = 32
@@ -172,12 +170,11 @@ class TitleBar(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg, db, keymap, recognizer, player, settings_store, config_path=None,
+    def __init__(self, cfg, db, keymap, player, config_path=None,
                  profile=None, profiles=None, event_player=None):
         super().__init__()
         self._cfg = cfg
         self._player = player
-        self._settings_store = settings_store
         self._config_path = config_path
         # 游戏档位(M3 起由 main.py 注入):当前激活档位与全部候选档位。
         # M4 在演奏控制页消费它们(档位下拉 + 按档位组装 CompileParams)。
@@ -199,24 +196,17 @@ class MainWindow(QMainWindow):
         self.resize(1080, 720)
         self.setMinimumSize(900, 600)
 
-        self.upload_tab = UploadTab(
-            db,
-            recognizer,
-            keymap,
-            advisor_fn=lambda: (self._cfg.get("advisor") or {}, self._settings_store.get_active()),
-        )
+        self.upload_tab = UploadTab(db)
         self.library_tab = LibraryTab(db)
         self.player_tab = PlayerTab(db, player, cfg.get("player", {}), config_path=config_path,
                                     profile=self._profile, profiles=self._profiles,
                                     event_player=self._event_player)
-        self.settings_tab = SettingsTab(settings_store)
 
         self._build_ui()
 
         self.upload_tab.saved.connect(self.library_tab.refresh)
         self.upload_tab.saved.connect(self.player_tab.refresh)
         self.library_tab.go_play.connect(self._go_play)
-        self.settings_tab.providers_saved.connect(self._on_providers_saved)
 
         hotkey = str(cfg.get("player", {}).get("stop_hotkey", "F8")).lower()
         self._hotkey_listener = pk.GlobalHotKeys({f"<{hotkey}>": player.stop})
@@ -227,7 +217,6 @@ class MainWindow(QMainWindow):
         QApplication.instance().aboutToQuit.connect(self._cleanup_on_quit)
 
         self.player_tab.refresh()
-        self.settings_tab.refresh_provider_status()
 
         # 应用级事件过滤器:子控件覆盖边缘时也能命中拉伸
         QApplication.instance().installEventFilter(self)
@@ -291,7 +280,6 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.upload_tab)
         self.stack.addWidget(self.library_tab)
         self.stack.addWidget(self.player_tab)
-        self.stack.addWidget(self.settings_tab)
         body.addWidget(self.stack, 1)
 
         root_layout.addLayout(body, 1)
@@ -359,15 +347,6 @@ class MainWindow(QMainWindow):
 
     def set_status(self, text: str):
         self.status_label.setText(text)
-
-    def _on_providers_saved(self):
-        from core.recognizer import get_recognizer_from_provider
-
-        provider = self._settings_store.get_active()
-        self.upload_tab.set_recognizer(get_recognizer_from_provider(provider))
-        self.set_status(
-            f"识别模型: {provider['name']} · {provider['model']}" if provider else "识别模型: 内置样例(stub)"
-        )
 
     # ---------- 边缘拉伸 ----------
 

@@ -310,8 +310,8 @@ body {
   padding: 3px 8px; border-radius: var(--r-sm);
   font-size: 12px; font-weight: 500;
 }
-.source-tag.image { background: rgba(56, 189, 248, 0.1); color: var(--state-info); }
-.source-tag.document { background: rgba(74, 222, 128, 0.1); color: var(--state-success); }
+.source-tag.manual { background: rgba(74, 222, 128, 0.1); color: var(--state-success); }
+.source-tag.import { background: rgba(56, 189, 248, 0.1); color: var(--state-info); }
 .source-tag i { width: 13px; height: 13px; }
 .bpm-badge {
   display: inline-block; padding: 3px 10px;
@@ -401,12 +401,8 @@ body {
               <i data-lucide="play-circle"></i>
               <span>演奏控制</span>
             </a>
-            <a href="settings.html" data-nav-key="settings" class="nav-item" data-dom-id="nav-settings">
-              <i data-lucide="settings"></i>
-              <span>模型设置</span>
-            </a>
           </nav>
-          <div class="sidebar-footer">v1.0</div>
+          <div class="sidebar-footer">v1.1.1</div>
         </aside>
         <!-- Main area -->
         <div class="main-area">
@@ -424,7 +420,7 @@ body {
                 <div class="section-header">
                   <div>
                     <div class="section-title">已保存乐谱</div>
-                    <div class="section-desc">保存过的乐谱无需再次上传，可直接演奏</div>
+                    <div class="section-desc">保存过的乐谱无需再次识别，可直接演奏</div>
                   </div>
                 </div>
                 <div class="btn-row" style="margin-bottom: 20px;">
@@ -456,9 +452,9 @@ body {
                       <td class="col-id">1</td>
                       <td class="col-name">小星星</td>
                       <td class="col-source">
-                        <span class="source-tag image">
-                          <i data-lucide="image"></i>
-                          <span>图片</span>
+                        <span class="source-tag manual">
+                          <i data-lucide="clipboard-check"></i>
+                          <span>手动</span>
                         </span>
                       </td>
                       <td class="col-bpm"><span class="bpm-badge">100</span></td>
@@ -468,9 +464,9 @@ body {
                       <td class="col-id">2</td>
                       <td class="col-name">月亮代表我的心</td>
                       <td class="col-source">
-                        <span class="source-tag document">
-                          <i data-lucide="file-text"></i>
-                          <span>文档</span>
+                        <span class="source-tag import">
+                          <i data-lucide="file-down"></i>
+                          <span>导入</span>
                         </span>
                       </td>
                       <td class="col-bpm"><span class="bpm-badge">80</span></td>
@@ -480,9 +476,9 @@ body {
                       <td class="col-id">3</td>
                       <td class="col-name">欢乐颂</td>
                       <td class="col-source">
-                        <span class="source-tag image">
-                          <i data-lucide="image"></i>
-                          <span>图片</span>
+                        <span class="source-tag manual">
+                          <i data-lucide="clipboard-check"></i>
+                          <span>手动</span>
                         </span>
                       </td>
                       <td class="col-bpm"><span class="bpm-badge">120</span></td>
@@ -492,9 +488,9 @@ body {
                       <td class="col-id">4</td>
                       <td class="col-name">茉莉花</td>
                       <td class="col-source">
-                        <span class="source-tag document">
-                          <i data-lucide="file-text"></i>
-                          <span>文档</span>
+                        <span class="source-tag manual">
+                          <i data-lucide="clipboard-check"></i>
+                          <span>手动</span>
                         </span>
                       </td>
                       <td class="col-bpm"><span class="bpm-badge">90</span></td>
@@ -504,9 +500,9 @@ body {
                       <td class="col-id">5</td>
                       <td class="col-name">卡农</td>
                       <td class="col-source">
-                        <span class="source-tag image">
-                          <i data-lucide="image"></i>
-                          <span>图片</span>
+                        <span class="source-tag import">
+                          <i data-lucide="file-down"></i>
+                          <span>导入</span>
                         </span>
                       </td>
                       <td class="col-bpm"><span class="bpm-badge">88</span></td>
@@ -527,7 +523,7 @@ body {
           </div>
           <div class="status-right">
             <span class="status-item"><i data-lucide="zap"></i>F8 紧急停止</span>
-            <span>v1.0</span>
+            <span>v1.1.1</span>
           </div>
         </div>
     </main>

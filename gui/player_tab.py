@@ -3,6 +3,8 @@
 三态控制:开始(或暂停后"继续演奏") / 停止(= 暂停,进度保留) / 重置(仅停止后可用,进度归零)。
 """
 
+import random
+
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -19,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from core import ir as ir_mod
 from core.compiler import compile_score
+from core.humanize import HumanizeParams, plan_timings
 from core.profile import resolve_profile
 from core.scenario import SCENARIOS, get_scenario
 from core.window_monitor import FocusLockPolicy, ForegroundWatcher
@@ -27,11 +30,13 @@ from gui.widgets import AppDialog
 
 
 def build_event_plan(notes, profile, scenario_id, *, bpm, settle_ms,
-                     release_settle_ms, hold_ratio, gap_ms):
+                     release_settle_ms, hold_ratio, gap_ms, humanize=None):
     """事件路径(三角洲档位):谱面 → (ScenarioPlan, 降级清单)。
 
     纯函数,不依赖 GUI/游戏/时钟,便于单测。音符层与编译逻辑不 fork——
     复用 M2 的 IR/编译器与 M3 的档位,差异只由 scenario 收敛到会话层。
+    humanize:HumanizeParams 或 None;仅自由演奏等 humanize 类场景生效
+    (识别类场景由 scenario.humanize 决定,见 core/scenario.py)。
     """
     scenario = get_scenario(scenario_id)
     elements = ir_mod.from_storage(notes)
@@ -39,7 +44,10 @@ def build_event_plan(notes, profile, scenario_id, *, bpm, settle_ms,
         bpm=bpm, settle_ms=settle_ms, release_settle_ms=release_settle_ms,
         hold_ratio=hold_ratio, max_hold_ms=None, gap_ms=gap_ms)
     params = scenario.apply_intervals(params)
-    result = compile_score(elements, params)
+    timings = None
+    if humanize is not None and scenario.humanize:
+        timings = plan_timings(notes, humanize, random.Random())
+    result = compile_score(elements, params, timings=timings)
     return scenario.plan(result.events), result.degradations
 
 
