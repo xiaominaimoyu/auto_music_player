@@ -36,12 +36,20 @@ def _keep(entry_name: str) -> bool:
     # Qt 插件:仅保留窗口平台与窗口样式
     if "/qt6/plugins/" in n:
         return "/platforms/" in n or "/styles/" in n
-    # Qt DLL 目录:仅保留 Core/Gui/Widgets 与 MSVC 运行库
+    # Qt DLL 目录:保留 Core/Gui/Widgets + 所有运行时依赖(修复 QtCore 加载失败)
     if "/qt6/bin/" in n and n.endswith(".dll"):
         base = n.rsplit("/", 1)[-1]
+        # 保留 Qt6 核心模块
         if base.startswith(("qt6core", "qt6gui", "qt6widgets")):
             return True
-        return base.startswith(("msvcp", "vcruntime", "concrt", "ucrtbase"))
+        # 保留所有 MSVC 运行时库和 Windows API Set DLL
+        if base.startswith(("msvcp", "vcruntime", "concrt", "ucrtbase", "api-ms-win-")):
+            return True
+        # 保留可能的 Qt 底层依赖(如 libgcc/libstdc++/libEGL)
+        if any(x in base for x in ("libgcc", "libstdc++", "libegl", "libglesv2")):
+            return True
+        # 其他 Qt DLL 过滤掉
+        return False
     # Qt 翻译文件(.qm)用不到
     if "/translations/" in n and n.endswith(".qm"):
         return False

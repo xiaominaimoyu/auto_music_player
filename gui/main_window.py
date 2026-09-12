@@ -73,12 +73,14 @@ class TitleBarBtn(QAbstractButton):
         self._is_maximized = False
         self.setFixedSize(46, TITLE_BAR_HEIGHT)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.setToolTip({
-            "min": "最小化",
-            "max": "最大化",
-            "mini": "切为演奏小窗(悬浮于游戏上方,点击不夺游戏焦点)",
-            "close": "关闭",
-        }[kind])
+        self.setToolTip(
+            {
+                "min": "最小化",
+                "max": "最大化",
+                "mini": "切为演奏小窗(悬浮于游戏上方,点击不夺游戏焦点)",
+                "close": "关闭",
+            }[kind]
+        )
 
     def set_maximized(self, maximized: bool):
         if self._is_maximized != maximized:
@@ -170,8 +172,17 @@ class TitleBar(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg, db, keymap, player, config_path=None,
-                 profile=None, profiles=None, event_player=None):
+    def __init__(
+        self,
+        cfg,
+        db,
+        keymap,
+        player,
+        config_path=None,
+        profile=None,
+        profiles=None,
+        event_player=None,
+    ):
         super().__init__()
         self._cfg = cfg
         self._player = player
@@ -198,9 +209,15 @@ class MainWindow(QMainWindow):
 
         self.upload_tab = UploadTab(db)
         self.library_tab = LibraryTab(db)
-        self.player_tab = PlayerTab(db, player, cfg.get("player", {}), config_path=config_path,
-                                    profile=self._profile, profiles=self._profiles,
-                                    event_player=self._event_player)
+        self.player_tab = PlayerTab(
+            db,
+            player,
+            cfg.get("player", {}),
+            config_path=config_path,
+            profile=self._profile,
+            profiles=self._profiles,
+            event_player=self._event_player,
+        )
 
         self._build_ui()
 
@@ -278,7 +295,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        footer = QLabel("v1.2.4")
+        footer = QLabel("v1.2.5")
         footer.setObjectName("SidebarFooter")
         sidebar_layout.addWidget(footer)
 
@@ -304,7 +321,9 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("StatusText")
         hotkey_label = QLabel("按 F8 可随时暂停演奏")
         hotkey_label.setObjectName("StatusText")
-        hotkey_label.setToolTip("全局热键 F8:无论焦点在哪个窗口,按下 F8 会暂停当前演奏,可在演奏页「继续演奏」或「重置」")
+        hotkey_label.setToolTip(
+            "全局热键 F8:无论焦点在哪个窗口,按下 F8 会暂停当前演奏,可在演奏页「继续演奏」或「重置」"
+        )
         status_layout.addWidget(dot)
         status_layout.addWidget(self.status_label)
         status_layout.addStretch(1)
@@ -312,9 +331,13 @@ class MainWindow(QMainWindow):
             admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
         except Exception:
             admin = False
-        perm_label = QLabel("管理员权限" if admin else "普通权限 · 游戏收不到按键时请以管理员运行")
+        perm_label = QLabel(
+            "管理员权限" if admin else "普通权限 · 游戏收不到按键时请以管理员运行"
+        )
         perm_label.setObjectName("StatusText")
-        perm_label.setStyleSheet(f"color: {STATE_SUCCESS};" if admin else f"color: {STATE_WARNING};")
+        perm_label.setStyleSheet(
+            f"color: {STATE_SUCCESS};" if admin else f"color: {STATE_WARNING};"
+        )
         status_layout.addWidget(perm_label)
         status_layout.addWidget(hotkey_label)
         status_layout.addWidget(QSizeGrip(status_bar))
@@ -340,7 +363,9 @@ class MainWindow(QMainWindow):
         from gui.mini_window import MiniPlayerWindow
 
         if self._mini_window is None:
-            self._mini_window = MiniPlayerWindow(self.player_tab, on_restore=self._restore_from_mini)
+            self._mini_window = MiniPlayerWindow(
+                self.player_tab, on_restore=self._restore_from_mini
+            )
         self.player_tab.disable_focus_watch()
         self._mini_window.show()
         self.hide()
@@ -401,7 +426,10 @@ class MainWindow(QMainWindow):
             elif obj in (self, self.title_bar, self.centralWidget()):
                 self.unsetCursor()
             return False
-        if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+        if (
+            et == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
             direction = self._hit_dir(event.globalPosition().toPoint())
             if direction:
                 self._resize_dir = direction
@@ -435,8 +463,13 @@ class MainWindow(QMainWindow):
     # ---------- 标题栏拖动 / 最大化 ----------
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= TITLE_BAR_HEIGHT:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.position().y() <= TITLE_BAR_HEIGHT
+        ):
+            self._drag_pos = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
             event.accept()
 
     def mouseMoveEvent(self, event):
