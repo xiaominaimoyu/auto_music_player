@@ -6,6 +6,7 @@ import org.json.JSONArray
 data class NoteEvent(
     val notes: List<String>,
     val dur: Double,
+    val semitone: Boolean = false,
 )
 
 /** notes <-> JSON 数组(与原桌面版 notes_json 协议一致)。 */
@@ -17,6 +18,7 @@ object NoteCodec {
             val obj = org.json.JSONObject()
             obj.put("notes", JSONArray(n.notes))
             obj.put("dur", n.dur)
+            if (n.semitone) obj.put("semitone", true)
             arr.put(obj)
         }
         return arr.toString()
@@ -30,7 +32,7 @@ object NoteCodec {
             val ids = mutableListOf<String>()
             val nArr = obj.optJSONArray("notes") ?: JSONArray()
             for (j in 0 until nArr.length()) ids.add(nArr.getString(j))
-            result.add(NoteEvent(ids, obj.optDouble("dur", 1.0)))
+            result.add(NoteEvent(ids, obj.optDouble("dur", 1.0), obj.optBoolean("semitone", false)))
         }
         return result
     }

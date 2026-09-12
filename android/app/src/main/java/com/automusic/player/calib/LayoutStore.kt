@@ -2,6 +2,7 @@ package com.automusic.player.calib
 
 import android.content.Context
 import com.automusic.player.core.KeyPointMap
+import com.automusic.player.core.delta.DeltaKeyPoint
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,6 +15,7 @@ data class KeyLayout(
     val id: String,
     val name: String,
     val points: Map<String, Pair<Float, Float>>,
+    val gameType: String = KeyPointMap.GAME_WUTHERING,
 )
 
 data class LayoutState(
@@ -94,8 +96,12 @@ class LayoutStore(context: Context) {
             if (file.exists()) {
                 decode(file.readText())
             } else {
-                // 首次启动:写入鸣潮/原神两套默认预设
-                val initial = listOf(default("wuthering"), default("genshin"))
+                // 首次启动:写入鸣潮/原神/三角洲三套默认预设
+                val initial = listOf(
+                    default("wuthering"),
+                    default("genshin"),
+                    default(DeltaKeyPoint.GAME_DELTA),
+                )
                 val state = LayoutState(initial, initial.first().id)
                 runCatching { write(state) }
                 state
@@ -107,8 +113,15 @@ class LayoutStore(context: Context) {
 
     private fun default(game: String): KeyLayout {
         val id = game
-        val name = KeyPointMap.GAME_NAMES[game] ?: game
-        return KeyLayout(id, name, KeyPointMap.defaultLayout(game))
+        val name = when (game) {
+            DeltaKeyPoint.GAME_DELTA -> "三角洲"
+            else -> KeyPointMap.GAME_NAMES[game] ?: game
+        }
+        val points = when (game) {
+            DeltaKeyPoint.GAME_DELTA -> DeltaKeyPoint.defaultLayout()
+            else -> KeyPointMap.defaultLayout(game)
+        }
+        return KeyLayout(id, name, points, game)
     }
 
     private fun write(state: LayoutState) {
@@ -144,6 +157,7 @@ class LayoutStore(context: Context) {
             root.put("version", FORMAT_VERSION)
             root.put("id", layout.id)
             root.put("name", layout.name)
+            root.put("gameType", layout.gameType)
             root.put("points", encodeLayout(layout).getJSONObject("points"))
             return root.toString(2)
         }
@@ -166,9 +180,14 @@ class LayoutStore(context: Context) {
             }
             val id = root.optString("id").trim()
             if (id.isEmpty()) throw LayoutFormatException("缺少布局 ID")
+            val gameType = root.optString("gameType", KeyPointMap.GAME_WUTHERING)
             val ptsObj = root.optJSONObject("points")
                 ?: throw LayoutFormatException("缺少 points 琴键坐标数据")
-            val validNotes = KeyPointMap.ALL_NOTES.toSet()
+            val validNotes = when (gameType) {
+                DeltaKeyPoint.GAME_DELTA -> DeltaKeyPoint.KEY_POINTS.toSet()
+                else -> KeyPointMap.ALL_NOTES.toSet()
+            }
+            val expectedCount = validNotes.size
             val points = LinkedHashMap<String, Pair<Float, Float>>()
             val unknown = mutableListOf<String>()
             for (key in ptsObj.keys()) {
@@ -203,17 +222,18 @@ class LayoutStore(context: Context) {
                 if (unknown.isNotEmpty()) {
                     add("已忽略 ${unknown.size} 个无效键位:${unknown.take(3).joinToString()}")
                 }
-                if (points.size < KeyPointMap.ALL_NOTES.size) {
-                    add("布局仅含 ${points.size}/${KeyPointMap.ALL_NOTES.size} 个琴键坐标,缺失键位演奏时不会触发")
+                if (points.size < expectedCount) {
+                    add("布局仅含 ${points.size}/$expectedCount 个琴键坐标,缺失键位演奏时不会触发")
                 }
             }
-            return LayoutImportOutcome(KeyLayout(finalId, name, points), renamed, warnings)
+            return LayoutImportOutcome(KeyLayout(finalId, name, points, gameType), renamed, warnings)
         }
 
         private fun encodeLayout(l: KeyLayout): JSONObject {
             val obj = JSONObject()
             obj.put("id", l.id)
             obj.put("name", l.name)
+            obj.put("gameType", l.gameType)
             val pts = JSONObject()
             for ((noteId, p) in l.points) {
                 pts.put(noteId, JSONArray().put(p.first.toDouble()).put(p.second.toDouble()))
@@ -229,7 +249,7 @@ class LayoutStore(context: Context) {
                 val pair = p.getJSONArray(key)
                 pts[key] = pair.getDouble(0).toFloat() to pair.getDouble(1).toFloat()
             }
-            return KeyLayout(o.optString("id"), o.optString("name"), pts)
+            return KeyLayout(o.optString("id"), o.optString("name"), pts, o.optString("gameType", KeyPointMap.GAME_WUTHERING))
         }
     }
 }

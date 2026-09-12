@@ -21,10 +21,12 @@ dist_m7/
 
 # 临时文件
 _diag_dialog.py
+_diag_delta_pitch.py
 _probe_pitch.py
 compare_projects.py
 smoke_stderr.log
 smoke_stdout.log
+nul
 
 # Android(android/ 子项目)
 android/.gradle/

@@ -53,6 +53,14 @@ import com.automusic.player.core.HumanizeParams
 import com.automusic.player.core.NoteCodec
 import com.automusic.player.core.ScreenMetrics
 import com.automusic.player.core.PlayerEngine
+import com.automusic.player.core.delta.DeltaCompileParams
+import com.automusic.player.core.delta.DeltaKeyPoint
+import com.automusic.player.core.delta.DeltaLayout
+import com.automusic.player.core.delta.DeltaPlayerEngine
+import com.automusic.player.core.delta.FreePlayScenario
+import com.automusic.player.core.delta.NpcQuestScenario
+import com.automusic.player.core.delta.Scenario
+import com.automusic.player.core.delta.SessionManager
 import com.automusic.player.input.AmpAccessibilityService
 import com.automusic.player.input.TouchInjector
 import com.automusic.player.PlaybackService
@@ -73,9 +81,13 @@ fun PlayScreen(container: AppContainer) {
     val context = LocalContext.current
     val player = container.player
 
+    val deltaPlayer = remember { DeltaPlayerEngine(container.appScope) }
+    val sessionManager = remember { SessionManager(deltaPlayer, context) }
+
     val scores by container.db.scoreDao().observeAll().collectAsState(initial = emptyList())
     val layoutState by container.layouts.state.collectAsState()
     val playState by player.state.collectAsState()
+    val deltaPlayState by deltaPlayer.state.collectAsState()
 
     var a11yReady by remember { mutableStateOf(AmpAccessibilityService.ready) }
 
@@ -91,6 +103,8 @@ fun PlayScreen(container: AppContainer) {
     var holdRatio by remember { mutableStateOf(0.75f) }
     var gapMs by remember { mutableStateOf(20f) }
     var humanizeOn by remember { mutableStateOf(true) }
+    var deltaScenario by remember { mutableStateOf<Scenario>(FreePlayScenario()) }
+    var deltaDegradations by remember { mutableStateOf<List<com.automusic.player.core.delta.Degradation>>(emptyList()) }
 
     var countdown by remember { mutableStateOf<Int?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -109,9 +123,15 @@ fun PlayScreen(container: AppContainer) {
             PlaybackService.stop(context)
         }
     }
+    LaunchedEffect(deltaPlayState) {
+        if (deltaPlayState is DeltaPlayerEngine.State.Finished || deltaPlayState is DeltaPlayerEngine.State.Aborted) {
+            PlaybackService.stop(context)
+        }
+    }
 
     val selectedScore = scores.firstOrNull { it.id == selectedScoreId }
     val activeLayout = layoutState.active
+    val isDelta = activeLayout?.gameType == DeltaKeyPoint.GAME_DELTA
 
     fun startPlay() {
         notice = null
@@ -130,32 +150,52 @@ fun PlayScreen(container: AppContainer) {
                 notice = "没有可用布局:请到「标定」页创建"
                 return@launch
             }
-            // 暂停态下"开始"= 继续演奏;否则从头开始
-            val startIndex = (playState as? PlayerEngine.State.Paused)?.done ?: 0
-            // 3 秒倒计时,期间切到游戏窗口
-            for (i in 3 downTo 1) {
-                countdown = i
-                delay(1000)
-            }
-            countdown = null
             val notes = NoteCodec.decode(score.notesJson)
             if (notes.isEmpty()) {
                 notice = "乐谱为空:请回识别页重新保存"
                 return@launch
             }
             val (w, h) = ScreenMetrics.realSize(context)
-            PlaybackService.start(context)
-            player.play(
-                notes = notes,
-                bpm = bpm.toInt(),
-                holdRatio = holdRatio.toDouble(),
-                gapMs = gapMs.toLong(),
-                layout = layout.points,
-                screenW = w,
-                screenH = h,
-                startIndex = startIndex,
-                humanize = if (humanizeOn) HumanizeParams() else null,
-            )
+
+            if (layout.gameType == DeltaKeyPoint.GAME_DELTA) {
+                // 三角洲路径:DeltaCompiler + Scenario + DeltaPlayerEngine
+                val startIndex = (deltaPlayState as? DeltaPlayerEngine.State.Paused)?.done ?: 0
+                if (startIndex == 0) {
+                    for (i in 3 downTo 1) { countdown = i; delay(1000) }
+                    countdown = null
+                }
+                val deltaLayout = DeltaKeyPoint.buildLayout(layout.points)
+                val params = DeltaCompileParams(
+                    bpm = bpm.toInt(),
+                    holdRatio = holdRatio.toDouble(),
+                    gapMs = gapMs.toLong(),
+                )
+                val timings = if (humanizeOn && deltaScenario.humanize)
+                    com.automusic.player.core.Humanize.planTimings(notes) else null
+                val result = sessionManager.startSession(notes, params, deltaLayout, deltaScenario, w, h, timings)
+                if (result == null) {
+                    notice = "演奏启动失败:请检查无障碍服务"
+                    return@launch
+                }
+                deltaDegradations = result.degradations
+            } else {
+                // 鸣潮/原神路径:PlayerEngine(原有逻辑零改动)
+                val startIndex = (playState as? PlayerEngine.State.Paused)?.done ?: 0
+                for (i in 3 downTo 1) { countdown = i; delay(1000) }
+                countdown = null
+                PlaybackService.start(context)
+                player.play(
+                    notes = notes,
+                    bpm = bpm.toInt(),
+                    holdRatio = holdRatio.toDouble(),
+                    gapMs = gapMs.toLong(),
+                    layout = layout.points,
+                    screenW = w,
+                    screenH = h,
+                    startIndex = startIndex,
+                    humanize = if (humanizeOn) HumanizeParams() else null,
+                )
+            }
         }
     }
 
@@ -308,50 +348,111 @@ fun PlayScreen(container: AppContainer) {
             }
         }
 
+        // ---- 三角洲专属:场景选择 + 口琴就位提示 ----
+        if (isDelta) {
+            Card(colors = CardDefaults.cardColors(containerColor = com.automusic.player.ui.theme.Surface1)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("三角洲口琴", color = Brand, style = MaterialTheme.typography.titleSmall)
+                    Text("场景", color = Ink2, style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        androidx.compose.material3.FilterChip(
+                            selected = deltaScenario is FreePlayScenario,
+                            onClick = { deltaScenario = FreePlayScenario() },
+                            label = { Text("自由演奏") },
+                        )
+                        androidx.compose.material3.FilterChip(
+                            selected = deltaScenario is NpcQuestScenario,
+                            onClick = { deltaScenario = NpcQuestScenario() },
+                            label = { Text("NPC 任务") },
+                        )
+                    }
+                    Text(
+                        "请先手动把口琴拿在手里,再点开始演奏",
+                        color = StateWarning,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (deltaScenario is NpcQuestScenario) {
+                        Text(
+                            "NPC 任务模式:中断后不可续播,需重新听 NPC 示范;演奏完毕自动提交",
+                            color = Ink3,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+            // 降级清单展示
+            if (deltaDegradations.isNotEmpty()) {
+                Card(colors = CardDefaults.cardColors(containerColor = com.automusic.player.ui.theme.Surface1)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("降级清单(${deltaDegradations.size} 处)", color = StateWarning, style = MaterialTheme.typography.titleSmall)
+                        deltaDegradations.take(10).forEach { d ->
+                            Text(
+                                "#${d.index}: ${d.requested} → ${d.actual}(${d.reason})",
+                                color = Ink2,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        if (deltaDegradations.size > 10) {
+                            Text("...共 ${deltaDegradations.size} 处,仅显示前 10 条", color = Ink3, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- 播放/停止/重置 ----
-        val playing = playState is PlayerEngine.State.Playing
-        val pausedState = playState as? PlayerEngine.State.Paused
+        val playing = if (isDelta) deltaPlayState is DeltaPlayerEngine.State.Playing
+            else playState is PlayerEngine.State.Playing
+        val deltaPaused = deltaPlayState as? DeltaPlayerEngine.State.Paused
+        val legacyPaused = playState as? PlayerEngine.State.Paused
+        val pausedDone = if (isDelta) deltaPaused?.done ?: 0 else legacyPaused?.done ?: 0
+        val deltaAborted = deltaPlayState as? DeltaPlayerEngine.State.Aborted
+        val canResume = if (isDelta) deltaPaused != null && deltaAborted == null
+            else legacyPaused != null
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
-                enabled = !playing && countdown == null,
+                enabled = !playing && countdown == null && (deltaAborted == null || !isDelta),
                 onClick = { startPlay() },
                 colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = com.automusic.player.ui.theme.Bg),
                 modifier = Modifier.weight(1f),
-            ) { Text(if (pausedState != null && pausedState.done > 0) "继续演奏" else "开始演奏") }
+            ) { Text(if (canResume && pausedDone > 0) "继续演奏" else "开始演奏") }
             OutlinedButton(
                 enabled = playing,
                 onClick = {
-                    // 停止 = 暂停:进度保留,可「继续演奏」或「重置」
-                    player.stop()
+                    if (isDelta) sessionManager.endSession()
+                    else { player.stop(); PlaybackService.stop(context) }
                     countdown = null
-                    PlaybackService.stop(context)
                 },
                 modifier = Modifier.weight(1f),
             ) { Text("停止", color = StateError) }
             OutlinedButton(
-                enabled = pausedState != null,
+                enabled = if (isDelta) deltaPaused != null || deltaAborted != null
+                    else legacyPaused != null,
                 onClick = {
-                    // 重置:仅停止(暂停)后可用,清空演奏进度
-                    player.reset()
+                    if (isDelta) sessionManager.resetSession()
+                    else { player.reset(); PlaybackService.stop(context) }
                     countdown = null
-                    PlaybackService.stop(context)
+                    deltaDegradations = emptyList()
                 },
                 modifier = Modifier.weight(1f),
             ) { Text("重置") }
         }
 
         if (playing) {
-            val st = playState as PlayerEngine.State.Playing
+            val done = if (isDelta) (deltaPlayState as DeltaPlayerEngine.State.Playing).done
+                else (playState as PlayerEngine.State.Playing).done
+            val total = if (isDelta) (deltaPlayState as DeltaPlayerEngine.State.Playing).total
+                else (playState as PlayerEngine.State.Playing).total
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 LinearProgressIndicator(
-                    progress = { if (st.total == 0) 0f else st.done.toFloat() / st.total },
+                    progress = { if (total == 0) 0f else done.toFloat() / total },
                     color = Brand,
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(4.dp)),
                 )
                 Text(
-                    "${st.done} / ${st.total}",
+                    "$done / $total",
                     color = Ink2,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
@@ -359,17 +460,17 @@ fun PlayScreen(container: AppContainer) {
                 )
             }
         }
-        if (pausedState != null) {
+        if (isDelta && deltaPaused != null) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 LinearProgressIndicator(
-                    progress = { if (pausedState.total == 0) 0f else pausedState.done.toFloat() / pausedState.total },
+                    progress = { if (deltaPaused.total == 0) 0f else deltaPaused.done.toFloat() / deltaPaused.total },
                     color = com.automusic.player.ui.theme.StateWarning,
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(4.dp)),
                 )
                 Text(
-                    "已暂停:${pausedState.done} / ${pausedState.total} · 「继续演奏」或「重置」",
+                    "已暂停:${deltaPaused.done} / ${deltaPaused.total} · 「继续演奏」或「重置」",
                     color = com.automusic.player.ui.theme.StateWarning,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
@@ -377,7 +478,44 @@ fun PlayScreen(container: AppContainer) {
                 )
             }
         }
-        if (playState is PlayerEngine.State.Finished) {
+        if (!isDelta && legacyPaused != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                LinearProgressIndicator(
+                    progress = { if (legacyPaused.total == 0) 0f else legacyPaused.done.toFloat() / legacyPaused.total },
+                    color = com.automusic.player.ui.theme.StateWarning,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(4.dp)),
+                )
+                Text(
+                    "已暂停:${legacyPaused.done} / ${legacyPaused.total} · 「继续演奏」或「重置」",
+                    color = com.automusic.player.ui.theme.StateWarning,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        if (isDelta && deltaAborted != null) {
+            Text(
+                deltaAborted.reason,
+                color = StateError,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (isDelta && deltaPlayState is DeltaPlayerEngine.State.Finished) {
+            val st = deltaPlayState as DeltaPlayerEngine.State.Finished
+            Text(
+                when {
+                    st.error != null -> "演奏出错:${st.error}"
+                    st.complete -> "演奏完成"
+                    else -> "已停止"
+                },
+                color = if (st.error != null) StateError else Ink2,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (!isDelta && playState is PlayerEngine.State.Finished) {
             val st = playState as PlayerEngine.State.Finished
             Text(
                 when {
@@ -394,6 +532,8 @@ fun PlayScreen(container: AppContainer) {
         }
 
         // ---- 测试点击 ----
+        val testKey = if (isDelta) "note_4" else "mid_4"
+        val testLabel = if (isDelta) "音格 4" else "中音 4"
         OutlinedButton(onClick = {
             container.appScope.launch {
                 if (!TouchInjector.accessibilityReady) {
@@ -402,22 +542,18 @@ fun PlayScreen(container: AppContainer) {
                 }
                 try {
                     val layout = container.layouts.state.value.active ?: return@launch
-                    val p = layout.points["mid_4"] ?: return@launch
+                    val p = layout.points[testKey] ?: return@launch
                     val (w, h) = ScreenMetrics.realSize(context)
-                    // 3 秒倒计时:给用户时间切到游戏,手势按坐标路由到前台游戏窗口
-                    for (i in 3 downTo 1) {
-                        countdown = i
-                        delay(1000)
-                    }
+                    for (i in 3 downTo 1) { countdown = i; delay(1000) }
                     countdown = null
                     TouchInjector.tap(p.first * w, p.second * h)
-                    notice = "已向「中音 4」位置发送一次测试点击"
+                    notice = "已向「$testLabel」位置发送一次测试点击"
                 } catch (e: Exception) {
                     countdown = null
                     notice = "测试失败:${e.message}"
                 }
             }
-        }) { Text("发送测试点击(中音 4)") }
+        }) { Text("发送测试点击($testLabel)") }
     }
 
     // ---- 倒计时覆盖层 ----

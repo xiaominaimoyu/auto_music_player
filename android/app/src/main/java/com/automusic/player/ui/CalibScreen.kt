@@ -61,6 +61,7 @@ import com.automusic.player.calib.KeyLayout
 import com.automusic.player.calib.LayoutStore
 import com.automusic.player.core.KeyPointMap
 import com.automusic.player.core.ScreenMetrics
+import com.automusic.player.core.delta.DeltaKeyPoint
 import com.automusic.player.input.TouchInjector
 import com.automusic.player.ui.theme.Brand
 import com.automusic.player.ui.theme.Bg
@@ -106,9 +107,11 @@ fun CalibScreen(container: AppContainer) {
             editingLayout = outcome.layout
             editingName = outcome.layout.name
             notice = buildString {
+                val keyCount = if (outcome.layout.gameType == DeltaKeyPoint.GAME_DELTA)
+                    DeltaKeyPoint.KEY_POINTS.size else KeyPointMap.ALL_NOTES.size
                 append(
                     "已导入布局《${outcome.layout.name}》" +
-                        "(${outcome.layout.points.size}/${KeyPointMap.ALL_NOTES.size} 键)并设为激活"
+                        "(${outcome.layout.points.size}/$keyCount 键)并设为激活"
                 )
                 if (outcome.renamed) append("\n原 ID 与现有布局冲突,已自动改名避免覆盖")
                 outcome.warnings.forEach { append("\n$it") }
@@ -118,7 +121,9 @@ fun CalibScreen(container: AppContainer) {
         }
     }
 
-    val notes = KeyPointMap.ALL_NOTES
+    val gameType = editingLayout?.gameType ?: layoutState.active?.gameType ?: KeyPointMap.GAME_WUTHERING
+    val isDelta = gameType == DeltaKeyPoint.GAME_DELTA
+    val notes = if (isDelta) DeltaKeyPoint.KEY_POINTS else KeyPointMap.ALL_NOTES
     val currentNote = notes.getOrNull(cursor) ?: notes.last()
 
     Column(
@@ -271,20 +276,22 @@ fun CalibScreen(container: AppContainer) {
 
         // ---- 操作 ----
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
-                val h1 = points["high_1"]
-                val h7 = points["high_7"]
-                val l1 = points["low_1"]
-                val l7 = points["low_7"]
-                if (h1 == null || h7 == null || l1 == null || l7 == null) {
-                    notice = "四角推算需先标定 高音1、高音7、低音1、低音7 四个角点"
-                    return@OutlinedButton
-                }
-                KeyPointMap.deriveGrid(h1, h7, l1, l7)?.let { grid ->
-                    points = grid
-                    notice = "已按四角双线性插值推算全部 21 点,请检查并微调"
-                }
-            }) { Text("四角推算") }
+            if (!isDelta) {
+                OutlinedButton(onClick = {
+                    val h1 = points["high_1"]
+                    val h7 = points["high_7"]
+                    val l1 = points["low_1"]
+                    val l7 = points["low_7"]
+                    if (h1 == null || h7 == null || l1 == null || l7 == null) {
+                        notice = "四角推算需先标定 高音1、高音7、低音1、低音7 四个角点"
+                        return@OutlinedButton
+                    }
+                    KeyPointMap.deriveGrid(h1, h7, l1, l7)?.let { grid ->
+                        points = grid
+                        notice = "已按四角双线性插值推算全部 21 点,请检查并微调"
+                    }
+                }) { Text("四角推算") }
+            }
 
             OutlinedButton(onClick = {
                 scope.launch {
@@ -324,7 +331,7 @@ fun CalibScreen(container: AppContainer) {
             onClick = {
                 val target = editingLayout ?: return@Button
                 container.layouts.save(
-                    KeyLayout(target.id, editingName.ifBlank { target.name }, points),
+                    KeyLayout(target.id, editingName.ifBlank { target.name }, points, target.gameType),
                 )
                 editingLayout = container.layouts.state.value.layouts.first { it.id == target.id }
                 notice = "布局已保存并设为激活"
@@ -358,6 +365,7 @@ fun CalibScreen(container: AppContainer) {
     if (showNewDialog) {
         var newId by remember { mutableStateOf("") }
         var newName by remember { mutableStateOf("") }
+        var newGame by remember { mutableStateOf(KeyPointMap.GAME_WUTHERING) }
         AlertDialog(
             onDismissRequest = { showNewDialog = false },
             title = { Text("新建布局") },
@@ -367,12 +375,29 @@ fun CalibScreen(container: AppContainer) {
                         label = { Text("英文 ID(如 my_phone)") }, singleLine = true)
                     OutlinedTextField(value = newName, onValueChange = { newName = it },
                         label = { Text("显示名称") }, singleLine = true)
+                    Text("游戏类型", color = Ink2, style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        KeyPointMap.GAME_NAMES.forEach { (g, label) ->
+                            FilterChip(
+                                selected = newGame == g,
+                                onClick = { newGame = g },
+                                label = { Text(label) },
+                            )
+                        }
+                        FilterChip(
+                            selected = newGame == DeltaKeyPoint.GAME_DELTA,
+                            onClick = { newGame = DeltaKeyPoint.GAME_DELTA },
+                            label = { Text("三角洲") },
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     if (newId.isNotBlank()) {
-                        val created = KeyLayout(newId.trim(), newName.ifBlank { newId.trim() }, KeyPointMap.defaultLayout("wuthering"))
+                        val defaultPoints = if (newGame == DeltaKeyPoint.GAME_DELTA)
+                            DeltaKeyPoint.defaultLayout() else KeyPointMap.defaultLayout(newGame)
+                        val created = KeyLayout(newId.trim(), newName.ifBlank { newId.trim() }, defaultPoints, newGame)
                         container.layouts.save(created, makeActive = false)
                         editingLayout = created
                         editingName = created.name

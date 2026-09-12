@@ -59,11 +59,11 @@ class TestParser(unittest.TestCase):
         r = parse_jianpu("一闪一闪亮晶晶\n1 1 5 5 6 6 5-")
         self.assertEqual(len(r), 7)
 
-    def test_dot_is_dotted_not_low(self):
-        """`.` 是附点符号,不是低音标记(低音只能用 `,`)。"""
+    def test_dot_alone_is_low_not_dotted(self):
+        """`.` 单独出现是下点低音标记(三角洲约定),不是附点。"""
         r = parse_jianpu("5. 6.")
-        self.assertEqual([n["notes"][0] for n in r], ["mid_5", "mid_6"])
-        self.assertEqual([n["dur"] for n in r], [1.5, 1.5])
+        self.assertEqual([n["notes"][0] for n in r], ["low_5", "low_6"])
+        self.assertEqual([n["dur"] for n in r], [1.0, 1.0])
 
     def test_sample(self):
         """外部 AI 返回的典型规范化简谱(含高低音/附点/和弦/休止)全量解析。"""
@@ -160,7 +160,7 @@ class TestSemitoneParsing(unittest.TestCase):
 class TestDottedNote(unittest.TestCase):
     def test_dot_dotted_quarter(self):
         r = parse_jianpu("5.")
-        self.assertEqual(r, [{"notes": ["mid_5"], "dur": 1.5}])
+        self.assertEqual(r, [{"notes": ["low_5"], "dur": 1.0}])
 
     def test_comma_still_low(self):
         r = parse_jianpu("5,")
@@ -187,6 +187,41 @@ class TestChinesePunctuation(unittest.TestCase):
     def test_chinese_comma_error(self):
         _, errors = parse_jianpu("1\uff0c 2", collect=True)
         self.assertTrue(any("中文标点" in e.reason for e in errors))
+
+
+class TestDotAloneLow(unittest.TestCase):
+    """`.` 单独出现为下点低音(三角洲约定),带时值符号为附点。"""
+
+    def test_dot_alone_is_low(self):
+        r = parse_jianpu("5.")
+        self.assertEqual(r, [{"notes": ["low_5"], "dur": 1.0}])
+
+    def test_dot_alone_low_multiple(self):
+        r = parse_jianpu("1. 2. 3.")
+        self.assertEqual(
+            r,
+            [
+                {"notes": ["low_1"], "dur": 1.0},
+                {"notes": ["low_2"], "dur": 1.0},
+                {"notes": ["low_3"], "dur": 1.0},
+            ],
+        )
+
+    def test_dot_with_duration_is_dotted(self):
+        r = parse_jianpu("5._")
+        self.assertEqual(r, [{"notes": ["mid_5"], "dur": 0.75}])
+
+    def test_dot_with_dash_is_dotted(self):
+        r = parse_jianpu("5.-")
+        self.assertEqual(r, [{"notes": ["mid_5"], "dur": 3.0}])
+
+    def test_dot_with_sharp_is_low_semitone(self):
+        r = parse_jianpu("5.#")
+        self.assertEqual(r, [{"notes": ["low_5"], "dur": 1.0, "semitone": 1}])
+
+    def test_dot_with_octave_and_sharp(self):
+        r = parse_jianpu("1'.#")
+        self.assertEqual(r, [{"notes": ["high_1"], "dur": 1.0, "semitone": 1}])
 
 
 if __name__ == "__main__":

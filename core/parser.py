@@ -40,21 +40,33 @@ class ParseError:
 def _split_pitch_dur(suffix: str):
     """把数字后的修饰符串拆成(音高, 时值部分, 半音标记)。
 
-    # 可出现在八度标记前或后(如 1#, 1'#, 1,#);. 始终作为附点符号,
-    不再视为低音标记(低音只能用 ,)。
+    . 双语义判定规则:
+    - . 单独出现(如 5.) → 低音(三角洲下点约定),rest 清空,dur=1.0
+    - . 后跟时值符号(如 5._ 5.-) → 附点,rest 透传给 _parse_dur
+    - · 中文圆点始终作为附点符号
+    - 已有八度标记时(如 1'.) 消费 . 但保留原八度
+
+    # 可出现在八度标记前或后或 . 之后(如 1#, 1'#, 1,#, 5.#);
+    多个 # 不叠加,semitone 恒为 1。
     """
     pitch = "mid"
     semitone = 0
     rest = suffix
+    has_octave = False
     if rest.startswith("#"):
         semitone = 1
         rest = rest[1:]
     if rest.startswith(("'", ",")):
         pitch = _PITCH_SUFFIX[rest[0]]
         rest = rest[1:]
-    if rest.startswith("#"):
+        has_octave = True
+    if "#" in rest:
         semitone = 1
-        rest = rest[1:]
+        rest = rest.replace("#", "")
+    if rest == ".":
+        if not has_octave:
+            pitch = "low"
+        rest = ""
     return pitch, rest, semitone
 
 
@@ -81,12 +93,12 @@ def _build_single(token: str):
     """返回 (音符, 问题)。0 一律为休止;休止带八度记号记为问题,不影响输出。"""
     num = int(token[0])
     pitch, rest, semitone = _split_pitch_dur(token[1:])
-    dur = _parse_dur(rest)
     problem = None
     if num == 0:
         if token[1:2] in ("'", ","):
             problem = "休止符 0 不应带八度记号"
-        return {"notes": [], "dur": dur}, problem
+        return {"notes": [], "dur": _parse_dur(token[1:])}, problem
+    dur = _parse_dur(rest)
     item = {"notes": [_note_id(num, pitch)], "dur": dur}
     if semitone:
         item["semitone"] = 1

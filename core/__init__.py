@@ -1,3 +1,3 @@
-from .jianpu_editor import JianpuEditor, insert_rest, delete_event
+from .jianpu_editor import JianpuEditor, insert_rest
 
-__all__ = ["JianpuEditor", "insert_rest", "delete_event"]
+__all__ = ["JianpuEditor", "insert_rest"]
