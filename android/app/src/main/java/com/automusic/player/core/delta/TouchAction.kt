@@ -19,6 +19,7 @@ enum class TouchActionType {
  * @param y      屏幕 Y 像素坐标
  * @param action DOWN 或 UP
  * @param key    键名(用于释放追踪,如 "note_3"、"mod_lower"、"submit")
+ * @param sourceIndex 原始谱面元素序号；null 表示场景收尾等非谱面动作
  */
 data class TouchAction(
     val tMs: Double,
@@ -26,4 +27,5 @@ data class TouchAction(
     val y: Float,
     val action: TouchActionType,
     val key: String,
+    val sourceIndex: Int? = null,
 )

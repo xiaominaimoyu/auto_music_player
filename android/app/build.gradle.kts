@@ -13,8 +13,8 @@ android {
         applicationId = "com.automusic.player"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.2.4"
     }
 
     buildTypes {
@@ -61,6 +61,10 @@ dependencies {
 
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    testImplementation("junit:junit:4.13.2")
+    // JVM 单测需要真实 JSONObject 实现；Android 的 compile stub 在本机单测中会抛 not mocked。
+    testImplementation("org.json:json:20240303")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

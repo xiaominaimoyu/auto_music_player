@@ -40,6 +40,7 @@ def build_event_plan(
     hold_ratio,
     gap_ms,
     humanize=None,
+    source_index_offset=0,
 ):
     """事件路径(三角洲档位):谱面 → (ScenarioPlan, 降级清单)。
 
@@ -63,7 +64,12 @@ def build_event_plan(
     timings = None
     if humanize is not None and scenario.humanize:
         timings = plan_timings(notes, humanize, random.Random())
-    result = compile_score(elements, params, timings=timings)
+    result = compile_score(
+        elements,
+        params,
+        timings=timings,
+        source_index_offset=source_index_offset,
+    )
     return scenario.plan(result.events), result.degradations
 
 
@@ -136,6 +142,7 @@ class PlayerTab(QWidget):
         self._had_error = False
         self._paused_done = 0
         self._paused_total = 0
+        self._event_degradation_count = 0
         # 焦点检测:丢失目标窗口焦点时自动暂停,恢复后由用户选择续播或从头
         focus_cfg = player_cfg.get("focus_check") or {}
         self._focus_enabled = bool(focus_cfg.get("enabled", True))
@@ -387,6 +394,7 @@ class PlayerTab(QWidget):
         """回到未开始态:清空暂停进度与按钮状态。"""
         self._paused_done = 0
         self._paused_total = 0
+        self._event_degradation_count = 0
         self.play_btn.setText("开始演奏")
         self.reset_btn.setEnabled(False)
 
@@ -415,7 +423,7 @@ class PlayerTab(QWidget):
         self.play_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.reset_btn.setEnabled(False)
-        resume_hint = f"从第 {start_index} 音符继续" if start_index > 0 else ""
+        resume_hint = f"从第 {start_index + 1} 项继续" if start_index > 0 else ""
         self.state_label.setText(
             f"3 秒后演奏: 《{score['name']}》 {resume_hint}".strip()
         )
@@ -458,8 +466,16 @@ class PlayerTab(QWidget):
         self._update_scenario_visibility()
 
     def _play_event(self, notes, bpm, start_index, score_name):
+        if start_index >= len(notes):
+            self._clear_pause()
+            self.play_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.state_label.setText("就绪")
+            self.progress_state.setText("演奏完成")
+            return
+        remaining_notes = notes[start_index:]
         plan, degradations = build_event_plan(
-            notes,
+            remaining_notes,
             self._profile,
             self.scenario_combo.currentData() or "free_play",
             bpm=bpm,
@@ -468,12 +484,15 @@ class PlayerTab(QWidget):
             hold_ratio=self._hold_ratio,
             gap_ms=self._gap_ms,
             humanize=self._humanize_params,
+            source_index_offset=start_index,
         )
+        self._event_degradation_count = len(degradations)
         self._event_player.play(
             plan.events,
             plan.interrupt_mode,
-            start_index=start_index,
             score_name=score_name,
+            source_total=len(notes),
+            source_start_index=start_index,
         )
         n = len(degradations)
         suffix = f" · 已降级 {n} 处" if n else ""
@@ -485,6 +504,7 @@ class PlayerTab(QWidget):
         self._focus_timer.stop()
         self._paused_done = 0
         self._paused_total = 0
+        self._event_degradation_count = 0
         self.play_btn.setEnabled(True)
         self.play_btn.setText("开始演奏")
         self.stop_btn.setEnabled(False)
@@ -640,7 +660,9 @@ class PlayerTab(QWidget):
     def rearm_focus_watch(self):
         """从小窗还原到主窗时恢复焦点检测(仅演奏中生效)。"""
         self._mini_mode = False
-        if self._player.is_playing:
+        if self._player.is_playing or (
+            self._event_player is not None and self._event_player.is_playing
+        ):
             self._start_focus_watch()
 
     def snapshot_for_mini(self) -> dict:
@@ -672,8 +694,11 @@ class PlayerTab(QWidget):
         self.stop_btn.setEnabled(False)
         self.reset_btn.setEnabled(True)
         self.state_label.setText("已暂停")
+        resume_hint = (
+            f" · 下次从第 {done + 1} 项继续" if done < total else ""
+        )
         self.progress_state.setText(
-            f"已暂停于 {done} / {total} · 「继续演奏」或「重置」"
+            f"已暂停于 {done} / {total}{resume_hint} · 「继续演奏」或「重置」"
         )
         if self._focus_lost and not self._mini_mode:
             self._focus_lost = False
@@ -695,6 +720,7 @@ class PlayerTab(QWidget):
 
     def _on_finished(self, normal):
         self._focus_timer.stop()
+        event_degradation_count = self._event_degradation_count
         self._clear_pause()
         self.play_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -706,7 +732,8 @@ class PlayerTab(QWidget):
         if normal:
             self.state_label.setText("就绪")
             if summary is None:
-                self.progress_state.setText("演奏完成")
+                suffix = f" · 已降级 {event_degradation_count} 处" if event_degradation_count else ""
+                self.progress_state.setText(f"演奏完成{suffix}")
         elif not self._had_error:
             self.state_label.setText("就绪")
             self.progress_state.setText("已停止")

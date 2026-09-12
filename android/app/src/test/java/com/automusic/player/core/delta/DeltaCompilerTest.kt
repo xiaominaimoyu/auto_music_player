@@ -1,6 +1,8 @@
 package com.automusic.player.core.delta
 
 import com.automusic.player.core.NoteEvent
+import com.automusic.player.core.Timing
+import com.automusic.player.input.delta.DeltaTouchExecutor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -124,5 +126,38 @@ class DeltaCompilerTest {
         val r2 = DeltaCompiler.compile(notes, params, layout(), 1080, 2400)
         assertEquals(r1.events.size, r2.events.size)
         assertEquals(r1.durationMs, r2.durationMs, 0.01)
+    }
+
+    @Test
+    fun compile_humanizeOffsetsArePerNote_notPerTouchAction() {
+        val notes = List(3) { NoteEvent(listOf("mid_1"), 1.0) }
+        val params = DeltaCompileParams(bpm = 100, gapMs = 0L, holdRatio = 0.5)
+        val result = DeltaCompiler.compile(
+            notes,
+            params,
+            layout(),
+            1080,
+            2400,
+            listOf(Timing(10.0, 0.5), Timing(10.0, 0.5), Timing(10.0, 0.5)),
+        )
+        val downs = result.events.filter { it.action == TouchActionType.DOWN && it.key == "note_1" }
+        assertEquals(listOf(10.0, 610.0, 1210.0), downs.map { it.tMs })
+    }
+
+    @Test
+    fun compile_modifiedNote_isOneAtomicGestureWithModifierAndNote() {
+        val result = DeltaCompiler.compile(
+            listOf(NoteEvent(listOf("low_3"), 1.0)),
+            DeltaCompileParams(bpm = 120),
+            layout(),
+            1080,
+            2400,
+        )
+        val gestures = DeltaTouchExecutor.toAtomicGestures(result.events)
+        assertEquals(1, gestures.size)
+        assertEquals(setOf("mod_lower", "note_3"), gestures.single().strokes.map { it.key }.toSet())
+        val modifier = gestures.single().strokes.first { it.key == "mod_lower" }
+        val note = gestures.single().strokes.first { it.key == "note_3" }
+        assertTrue(note.startMs > modifier.startMs)
     }
 }

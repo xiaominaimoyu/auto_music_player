@@ -107,6 +107,12 @@ class TestIntervals(unittest.TestCase):
         self.assertEqual(new.settle_ms, 30.0)
         self.assertEqual(new.gap_ms, 20.0)
 
+    def test_user_calibration_above_scene_minimum_is_preserved(self):
+        params = CompileParams(**{**self.BASE, "settle_ms": 123.0, "gap_ms": 177.0})
+        new = NpcQuestScenario().apply_intervals(params)
+        self.assertEqual(new.settle_ms, 123.0)
+        self.assertEqual(new.gap_ms, 177.0)
+
 
 class TestRegistry(unittest.TestCase):
     def test_get_known(self):

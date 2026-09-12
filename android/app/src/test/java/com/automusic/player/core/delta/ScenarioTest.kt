@@ -63,6 +63,14 @@ class ScenarioTest {
     }
 
     @Test
+    fun npcQuest_intervals_preserveSlowerUserCalibration() {
+        val s = NpcQuestScenario()
+        val result = s.intervals(DeltaCompileParams(settleMs = 123L, gapMs = 177L))
+        assertEquals(123L, result.settleMs)
+        assertEquals(177L, result.gapMs)
+    }
+
+    @Test
     fun npcQuest_plan_appendsSubmitAction() {
         val s = NpcQuestScenario()
         val events = listOf(

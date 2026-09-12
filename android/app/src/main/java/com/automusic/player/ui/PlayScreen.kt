@@ -140,6 +140,16 @@ fun PlayScreen(container: AppContainer) {
                 notice = "请先开启「触摸注入」无障碍服务(见上方卡片)"
                 return@launch
             }
+            // 三角洲暂停态沿用已经编译好的原子手势计划，不能重新编译并从头播放。
+            if (
+                layoutState.active?.gameType == DeltaKeyPoint.GAME_DELTA &&
+                deltaPlayState is DeltaPlayerEngine.State.Paused
+            ) {
+                if (!sessionManager.resumeSession()) {
+                    notice = "断点续播启动失败:请确认无障碍服务仍开启，或重置后从头开始"
+                }
+                return@launch
+            }
             val score = container.db.scoreDao().getById(selectedScoreId)
             if (score == null) {
                 notice = "请先在下方选择要演奏的乐谱"
@@ -159,11 +169,8 @@ fun PlayScreen(container: AppContainer) {
 
             if (layout.gameType == DeltaKeyPoint.GAME_DELTA) {
                 // 三角洲路径:DeltaCompiler + Scenario + DeltaPlayerEngine
-                val startIndex = (deltaPlayState as? DeltaPlayerEngine.State.Paused)?.done ?: 0
-                if (startIndex == 0) {
-                    for (i in 3 downTo 1) { countdown = i; delay(1000) }
-                    countdown = null
-                }
+                for (i in 3 downTo 1) { countdown = i; delay(1000) }
+                countdown = null
                 val deltaLayout = DeltaKeyPoint.buildLayout(layout.points)
                 val params = DeltaCompileParams(
                     bpm = bpm.toInt(),

@@ -234,6 +234,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._player.shutdown()
+        if self._event_player is not None:
+            self._event_player.shutdown()
 
     def _build_ui(self):
         root = QWidget()
@@ -276,7 +278,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        footer = QLabel("v1.2.3")
+        footer = QLabel("v1.2.4")
         footer.setObjectName("SidebarFooter")
         sidebar_layout.addWidget(footer)
 

@@ -135,6 +135,33 @@ class TestCompileEventOrder(unittest.TestCase):
 
 
 class TestCompileTiming(unittest.TestCase):
+    def test_humanize_jitter_does_not_accumulate_between_beats(self):
+        """每拍 +10ms 只偏移自身，不能变成 +10/+20/+30… 的长曲漂移。"""
+        params = CompileParams(
+            bpm=100,
+            settle_ms=0.0,
+            release_settle_ms=0.0,
+            hold_ratio=0.5,
+            max_hold_ms=None,
+            gap_ms=0.0,
+        )
+        result = compile_score(
+            [IRNote(1, 0, 0, 1.0) for _ in range(5)],
+            params,
+            timings=[(10.0, 0.5)] * 5,
+        )
+        downs = [e.t_ms for e in result.events if e.device == "kb" and e.action == "down"]
+        self.assertEqual(downs, [10.0, 610.0, 1210.0, 1810.0, 2410.0])
+
+    def test_source_markers_end_on_last_event_of_logical_note(self):
+        result = compile_score(
+            [IRNote(1, 1, 0, 0.01), IRRest(1.0), IRNote(2, 0, 0, 0.01)],
+            FAST,
+            source_index_offset=4,
+        )
+        ends = [(e.source_index, e.key) for e in result.events if e.source_end]
+        self.assertEqual(ends, [(4, "Z"), (6, "X")])
+
     def test_same_modifier_held_across_notes(self):
         """相邻同修饰态不得 release→press 于同一时刻,否则游戏可能漏掉重新按下。"""
         notes = [IRNote(1, 1, 0, 0.01), IRNote(2, 1, 0, 0.01)]
@@ -213,6 +240,19 @@ class TestCompileDegradation(unittest.TestCase):
         self.assertEqual(r.skipped, 1)
         self.assertEqual(r.note_count, 0)
         self.assertEqual(r.events, [])
+
+    def test_rejected_modifier_after_held_modifier_keeps_timeline(self):
+        """被拒绝音降级为休止时仍携带源索引，不能破坏前一修饰音的收尾。"""
+        p = CompileParams(modifier_policy=ModifierPolicy.REJECT_NOTE)
+        r = compile_score([
+            IRNote(1, -1, 0, 0.25),
+            IRNote(2, 1, 1, 0.25),
+        ], p)
+        self.assertEqual(r.skipped, 1)
+        self.assertEqual(r.note_count, 1)
+        self.assertEqual({e.source_index for e in r.events}, {0})
+        self.assertEqual(r.events[-1].device, "mouse")
+        self.assertEqual(r.events[-1].action, "up")
 
     def test_direct_override_skips_modifier(self):
         """D3:命中直达键后不再按修饰键。"""

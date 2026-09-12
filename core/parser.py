@@ -1,7 +1,7 @@
 """简谱解析器:规范化简谱文本 -> 结构化音符序列。
 
 输出协议(与大模型 prompt 一致):
-- 音高:1-7 中音;数字+' 高音;数字+, 低音;0 休止
+- 音高:1-7 中音;数字+' 高音;数字+, 低音;0 休止；升半音可写 1# 或 #1
 - 时值:无后缀=四分音符(1拍);_ = 八分(0.5拍), __ = 十六分(0.25拍);
   - = 二分(2拍), -- = 全音符(4拍);附点用 . 或 · 跟在时值符号后,时值 ×1.5
 - 和弦:[音1 音2 ...]时值后缀,如 [1' 3' 5']- ;和弦内部只写音高
@@ -22,7 +22,9 @@ from dataclasses import dataclass
 
 _PITCH_SUFFIX = {"'": "high", ",": "low"}
 _CHORD_RE = re.compile(r"[\[\(]([^\]\)]+)[\]\)]([_\-.·]*)")
-_NOTE_RE = re.compile(r"[0-7](?:'|,|\.|·|_|-|#)*")
+# 兼容三角洲社区谱的前缀升半音写法 ``#1``；内部统一转成 ``1#``
+# 再交给既有的音高/时值拆分逻辑处理。
+_NOTE_RE = re.compile(r"#?[0-7](?:'|,|\.|·|_|-|#)*")
 _TUNE_LINE_RE = re.compile(r"^\s*1\s*=\s*[A-Ga-g]")
 _CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 
@@ -70,6 +72,47 @@ def _split_pitch_dur(suffix: str):
     return pitch, rest, semitone
 
 
+def _canonical_note_token(token: str) -> str:
+    """把可兼容的前缀升半音记法归一成既有的后缀记法。
+
+    解析器内部一直以 ``数字 + 修饰符`` 为基础；只在这里处理 ``#1``，
+    从而使 ``#1``、``#1'``、``#1,`` 与 ``1#``、``1'#``、``1,#`` 走完全
+    相同的下游路径。
+    """
+    return f"{token[1:]}#" if token.startswith("#") else token
+
+
+def _with_octave(token: str, marker: str) -> str:
+    """给社区谱分区中的单音补八度标记，显式八度优先。"""
+    prefix = "#" if token.startswith("#") else ""
+    body = token[len(prefix):]
+    if len(body) > 1 and body[1] in ("'", ","):
+        return token
+    return f"{prefix}{body[0]}{marker}{body[1:]}"
+
+
+def _normalize_delta_community_notation(line: str) -> str:
+    """兼容三角洲社区谱中不与标准和弦语义冲突的常见记号。
+
+    - ``#1``：由 ``_NOTE_RE`` 直接识别，后续归一为 ``1#``；
+    - ``【1 2】`` / ``（1 2）``：分别表示高、低音区；
+    - ``(5)``：单音圆括号没有和弦价值，按低音 5 处理；多音圆括号仍保留
+      为历史兼容的和弦语法。
+
+    这里只做无歧义转换；ASCII 方括号仍始终表示和弦，避免改变既有乐谱。
+    """
+    def region(match, marker: str) -> str:
+        return _NOTE_RE.sub(lambda m: _with_octave(m.group(0), marker), match.group(1))
+
+    line = re.sub(r"【([^】]+)】", lambda m: region(m, "'"), line)
+    line = re.sub(r"（([^）]+)）", lambda m: region(m, ","), line)
+    return re.sub(
+        r"\((#?[0-7](?:'|,|\.|·|_|-|#)*)\)",
+        lambda m: _with_octave(m.group(1), ","),
+        line,
+    )
+
+
 def _parse_dur(rest: str) -> float:
     dur = 1.0
     dotted = False
@@ -91,6 +134,7 @@ def _note_id(num: int, pitch: str) -> str:
 
 def _build_single(token: str):
     """返回 (音符, 问题)。0 一律为休止;休止带八度记号记为问题,不影响输出。"""
+    token = _canonical_note_token(token)
     num = int(token[0])
     pitch, rest, semitone = _split_pitch_dur(token[1:])
     problem = None
@@ -118,7 +162,7 @@ def _build_chord(inner: str, suffix: str):
         if not m:
             invalid.append(part)
             continue
-        token = m.group(0)
+        token = _canonical_note_token(m.group(0))
         num = int(token[0])
         if num == 0 or not 1 <= num <= 7:
             invalid.append(part)
@@ -154,6 +198,7 @@ def _iter_content_lines(text: str):
 
 def _parse_line(line: str):
     """解析单行,返回 (音符序列, 问题列表)。问题为 (token, 原因)。"""
+    line = _normalize_delta_community_notation(line)
     notes = []
     problems = []
     consumed = bytearray(len(line))

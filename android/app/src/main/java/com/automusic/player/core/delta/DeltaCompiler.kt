@@ -104,10 +104,10 @@ object DeltaCompiler {
      * 修饰态时序编译:按时序状态机编排触摸事件。
      *
      * 规则:
-     * - 修饰态变化时:释放旧状态钮(up) → releaseSettleMs → 按下新状态钮(down) → settleMs
-     * - 相邻同态保持按住(不释放不重按)
-     * - 音格:down → 按住 holdMs → up
-     * - 相邻音符间完全释放后再按下(禁止多点)
+     * Android 无障碍手势不能跨多次 dispatchGesture 保持手指状态，因此每个
+     * 逻辑音都编成一个可原子派发的窗口：修饰钮 down → settle → 音格
+     * down/up → 修饰钮 up。执行器会把同一 sourceIndex 的多条动作放入同一个
+     * GestureDescription，避免新音符取消仍按住的修饰钮。
      */
     private fun compileTimeline(
         items: List<ResolvedNote>,
@@ -115,66 +115,71 @@ object DeltaCompiler {
         layout: DeltaLayout,
         screenW: Int,
         screenH: Int,
+        timings: List<Timing>?,
     ): List<TouchAction> {
         val events = mutableListOf<TouchAction>()
-        var t = 0.0
-        var prevMod = Modifier.NATURAL
-        var modDown = false
+        // 未加真人化偏移的逻辑时间轴。每音 jitter 只能影响本音，不能累计到后续拍点。
+        var cursor = 0.0
 
         for (note in items) {
+            val durMs = note.dur * params.beatMs
             if (note.noteNum == null) {
-                t += note.dur * params.beatMs
+                cursor += durMs + params.gapMs.toDouble()
                 continue
             }
 
-            // 修饰态切换
-            if (note.modifier != prevMod) {
-                if (modDown) {
-                    val modCoord = layout.modifierPixels(prevMod, screenW, screenH)
-                    if (modCoord != null) {
-                        events.add(TouchAction(t, modCoord.first, modCoord.second, TouchActionType.UP, modifierKey(prevMod)))
-                    }
-                    t += params.releaseSettleMs
-                    modDown = false
-                }
-                if (note.modifier != Modifier.NATURAL) {
-                    val modCoord = layout.modifierPixels(note.modifier, screenW, screenH)
-                    if (modCoord != null) {
-                        events.add(TouchAction(t, modCoord.first, modCoord.second, TouchActionType.DOWN, modifierKey(note.modifier)))
-                    }
-                    t += params.settleMs
-                    modDown = true
-                }
-            }
-
-            // 音格按下 → 按住 → 抬起
-            val durMs = note.dur * params.beatMs
-            val holdMs = minOf(durMs * params.holdRatio, params.maxHoldMs.toDouble())
+            val timing = timings?.getOrNull(note.index)
+            val offsetMs = timing?.offsetMs ?: 0.0
+            val holdRatio = timing?.holdRatio ?: params.holdRatio
+            val nominalStart = cursor
+            val start = maxOf(0.0, nominalStart + offsetMs)
             val noteCoord = layout.notePixels(note.noteNum, screenW, screenH)
-            if (noteCoord != null) {
-                events.add(TouchAction(t, noteCoord.first, noteCoord.second, TouchActionType.DOWN, noteKey(note.noteNum)))
-                t += holdMs
-                events.add(TouchAction(t, noteCoord.first, noteCoord.second, TouchActionType.UP, noteKey(note.noteNum)))
-            } else {
-                t += holdMs
+            if (noteCoord == null) {
+                cursor = maxOf(
+                    cursor + durMs + params.gapMs.toDouble(),
+                    start + durMs + params.gapMs.toDouble(),
+                )
+                continue
             }
 
-            // 间隙
-            val remaining = durMs - holdMs
-            t += maxOf(remaining, params.gapMs.toDouble())
+            val modCoord = if (note.modifier == Modifier.NATURAL) null
+                else layout.modifierPixels(note.modifier, screenW, screenH)
+            val settle = if (modCoord == null) 0.0 else params.settleMs.toDouble()
+            val releaseSettle = if (modCoord == null) 0.0 else params.releaseSettleMs.toDouble()
+            val holdMs = minOf(durMs * holdRatio, params.maxHoldMs.toDouble())
+            val keyDown = start + settle
+            val keyUp = keyDown + holdMs
 
-            prevMod = note.modifier
-        }
-
-        // 最终释放状态钮
-        if (modDown) {
-            val modCoord = layout.modifierPixels(prevMod, screenW, screenH)
             if (modCoord != null) {
-                events.add(TouchAction(t, modCoord.first, modCoord.second, TouchActionType.UP, modifierKey(prevMod)))
+                events.add(TouchAction(
+                    start, modCoord.first, modCoord.second, TouchActionType.DOWN,
+                    modifierKey(note.modifier), note.index,
+                ))
             }
-        }
+            events.add(TouchAction(
+                keyDown, noteCoord.first, noteCoord.second, TouchActionType.DOWN,
+                noteKey(note.noteNum), note.index,
+            ))
+            events.add(TouchAction(
+                keyUp, noteCoord.first, noteCoord.second, TouchActionType.UP,
+                noteKey(note.noteNum), note.index,
+            ))
+            val releaseEnd = keyUp + releaseSettle
+            if (modCoord != null) {
+                events.add(TouchAction(
+                    releaseEnd, modCoord.first, modCoord.second, TouchActionType.UP,
+                    modifierKey(note.modifier), note.index,
+                ))
+            }
 
-        return events
+            val nominalReleaseEnd = nominalStart + settle + holdMs + releaseSettle
+            cursor = maxOf(
+                nominalStart + durMs + params.gapMs.toDouble(),
+                nominalReleaseEnd + params.gapMs.toDouble(),
+                releaseEnd + params.gapMs.toDouble(),
+            )
+        }
+        return events.sortedWith(compareBy<TouchAction> { it.tMs }.thenBy { it.action.ordinal })
     }
 
     private fun modifierKey(mod: Modifier): String = when (mod) {
@@ -239,22 +244,10 @@ object DeltaCompiler {
         }
 
         // 时序编译
-        var events = compileTimeline(resolved, params, layout, screenW, screenH)
-
-        // 真人化偏移叠加
-        if (timings != null && timings.isNotEmpty()) {
-            events = applyTimings(events, timings)
-        }
+        val events = compileTimeline(resolved, params, layout, screenW, screenH, timings)
 
         val durationMs = events.maxOfOrNull { it.tMs } ?: 0.0
         return DeltaCompileResult(events, allDegradations, notes.size, durationMs)
     }
 
-    /** 将真人化偏移叠加到事件时刻。 */
-    private fun applyTimings(events: List<TouchAction>, timings: List<Timing>): List<TouchAction> {
-        return events.mapIndexed { i, e ->
-            val offset = timings.getOrNull(i)?.offsetMs ?: 0.0
-            e.copy(tMs = maxOf(0.0, e.tMs + offset))
-        }
-    }
 }

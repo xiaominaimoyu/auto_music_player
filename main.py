@@ -121,6 +121,7 @@ def main():
     )
     # 进程退出兜底:任何退出路径(atexit)都停止演奏并释放全部按键,防止键卡死
     atexit.register(player.shutdown)
+    atexit.register(event_player.shutdown)
 
     # Windows 任务栏分组图标:显式 AppUserModelID 让任务栏显示自定义图标而非 Python 默认图标
     try:

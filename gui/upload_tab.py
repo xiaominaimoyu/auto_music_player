@@ -99,6 +99,7 @@ class UploadTab(QWidget):
     def __init__(self, db):
         super().__init__()
         self._db = db
+        self._last_parse_errors = []
         self._build_ui()
 
     def _card(self, resizable=False):
@@ -163,6 +164,10 @@ class UploadTab(QWidget):
         btn_row.addWidget(self.parse_btn)
         btn_row.addStretch(1)
         lay2.addLayout(btn_row)
+        self.parse_status = QLabel()
+        self.parse_status.setObjectName("SectionSubtitle")
+        self.parse_status.setWordWrap(True)
+        lay2.addWidget(self.parse_status)
         self._fix_card_cursors(card2)
         inner_layout.addWidget(card2)
 
@@ -275,10 +280,20 @@ class UploadTab(QWidget):
             )
             return
         try:
-            notes = parse_jianpu(raw)
+            notes, errors = parse_jianpu(raw, collect=True)
         except Exception as e:
             AppDialog.show_error(self, "解析失败", str(e))
             return
+        self._last_parse_errors = errors
+        if errors:
+            preview = "；".join(str(e) for e in errors[:2])
+            more = f"；另有 {len(errors) - 2} 处" if len(errors) > 2 else ""
+            self.parse_status.setText(
+                f"已解析 {len(notes)} 个音符，但发现 {len(errors)} 处未识别记号：{preview}{more}。"
+                "请修正原文后重新解析，或在校对表格中确认结果。"
+            )
+        else:
+            self.parse_status.setText(f"解析成功：{len(notes)} 个音符，未发现未识别记号。")
         if not notes:
             AppDialog.show_warning(self, "提示", "未能从文本中解析出音符,请检查格式")
             return

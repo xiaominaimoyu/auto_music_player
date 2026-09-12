@@ -16,7 +16,11 @@ class NpcQuestScenario : Scenario() {
     override val humanize: Boolean = false
 
     override fun intervals(base: DeltaCompileParams): DeltaCompileParams {
-        return base.copy(settleMs = 60L, gapMs = 120L)
+        // 场景给出安全下限；用户已校准得更慢时不得被静默覆盖。
+        return base.copy(
+            settleMs = maxOf(base.settleMs, 60L),
+            gapMs = maxOf(base.gapMs, 120L),
+        )
     }
 
     override fun plan(events: List<TouchAction>, submitCoord: Pair<Float, Float>?, lastTMs: Double): ScenarioPlan {

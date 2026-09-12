@@ -156,6 +156,34 @@ class TestSemitoneParsing(unittest.TestCase):
         self.assertEqual(r[0]["notes"], ["mid_1", "mid_3", "mid_5"])
         self.assertEqual(r[0]["semitone"], 1)
 
+    def test_prefix_sharp_matches_suffix_sharp(self):
+        self.assertEqual(parse_jianpu("#1 #2' #3,"), parse_jianpu("1# 2'# 3,#"))
+
+    def test_prefix_sharp_in_chord(self):
+        r = parse_jianpu("[#1 3 5]")
+        self.assertEqual(r[0]["notes"], ["mid_1", "mid_3", "mid_5"])
+        self.assertEqual(r[0]["semitone"], 1)
+
+
+class TestDeltaCommunityNotation(unittest.TestCase):
+    def test_chinese_regions_and_single_parenthesis(self):
+        r = parse_jianpu("【1 2】 （3 4） (5) #6")
+        self.assertEqual(
+            r,
+            [
+                {"notes": ["high_1"], "dur": 1.0},
+                {"notes": ["high_2"], "dur": 1.0},
+                {"notes": ["low_3"], "dur": 1.0},
+                {"notes": ["low_4"], "dur": 1.0},
+                {"notes": ["low_5"], "dur": 1.0},
+                {"notes": ["mid_6"], "dur": 1.0, "semitone": 1},
+            ],
+        )
+
+    def test_multi_note_ascii_parentheses_remain_chord(self):
+        r = parse_jianpu("(1 3)")
+        self.assertEqual(r, [{"notes": ["mid_1", "mid_3"], "dur": 1.0}])
+
 
 class TestDottedNote(unittest.TestCase):
     def test_dot_dotted_quarter(self):

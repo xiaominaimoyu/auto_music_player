@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
  *
  * 与 PlayerEngine 的区别:
  * - State 增加 Aborted(reason)(NpcQuest 不可续播)
- * - 消费编译产出的 HoldAction 序列(修饰态时序已编排)
+ * - 消费编译产出的原子 Gesture 序列(修饰态与音格同一次派发)
  * - stop() 按 plan.interruptMode 决定 pause(保留进度)或 abort(清空进度)
  *
  * 不改动 PlayerEngine 现有代码,独立实现。
@@ -50,24 +50,27 @@ class DeltaPlayerEngine(private val scope: kotlinx.coroutines.CoroutineScope) {
      * 开始演奏(或从指定进度续播)。
      *
      * @param plan       场景演奏计划
-     * @param startIndex 起始事件索引(暂停续播用)
+     * @param startIndex 起始原子手势索引(暂停续播用)
      */
     fun play(plan: ScenarioPlan, startIndex: Int = 0) {
         if (isPlaying) return
         currentPlan = plan
         job = scope.launch {
-            val holds = DeltaTouchExecutor.toHoldActions(plan.events)
-            val total = holds.size
+            val gestures = DeltaTouchExecutor.toAtomicGestures(plan.events)
+            val total = gestures.size
             lastTotal = total
             var complete = true
             var errorMsg: String? = null
             try {
-                val start = SystemClock.uptimeMillis()
-                for (idx in startIndex.coerceIn(0, total) until total) {
-                    val h = holds[idx]
-                    val target = start + h.tMs.toLong()
+                val safeStart = startIndex.coerceIn(0, total)
+                // 续播时以第一条未完成手势为新的零点，避免等待整段旧时间轴。
+                val baseMs = gestures.getOrNull(safeStart)?.tMs?.toLong() ?: 0L
+                val start = SystemClock.uptimeMillis() - baseMs
+                for (idx in safeStart until total) {
+                    val gesture = gestures[idx]
+                    val target = start + gesture.tMs.toLong()
                     delayUntil(target)
-                    DeltaTouchExecutor.dispatchHold(h.x, h.y, h.holdMs)
+                    DeltaTouchExecutor.dispatchAtomic(gesture)
                     lastDone = idx + 1
                     _state.value = State.Playing(lastDone, total)
                 }

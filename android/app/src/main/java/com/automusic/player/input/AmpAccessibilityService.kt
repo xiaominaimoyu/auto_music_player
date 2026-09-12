@@ -39,12 +39,37 @@ class AmpAccessibilityService : AccessibilityService() {
     /** 一次派发和弦手势:所有手指同时按下,按住 holdMs 后自动抬起。 */
     fun chord(coords: List<Pair<Float, Float>>, holdMs: Long) {
         require(coords.isNotEmpty()) { "和弦坐标为空" }
-        val builder = GestureDescription.Builder()
-        for ((x, y) in coords) {
-            val path = Path().apply { moveTo(x, y) }
-            builder.addStroke(GestureDescription.StrokeDescription(path, 0, holdMs.coerceIn(1, 60000)))
-        }
-        val accepted = dispatchGesture(builder.build(), null, null)
+        val accepted = timeline(
+            coords.map { (x, y) -> TimedTouch(x, y, 0L, holdMs) },
+            onComplete = null,
+        )
         if (!accepted) error("dispatchGesture 被系统拒绝")
+    }
+
+    /**
+     * 一次派发带相对时间的多 stroke 手势。所有需要同时生效的触点必须位于
+     * 同一个 GestureDescription 中，避免系统取消前一条未结束的手势。
+     */
+    fun timeline(strokes: List<TimedTouch>, onComplete: ((Boolean) -> Unit)?): Boolean {
+        require(strokes.isNotEmpty()) { "手势 stroke 不能为空" }
+        require(strokes.size <= 10) { "单次无障碍手势最多支持 10 个 stroke" }
+        val builder = GestureDescription.Builder()
+        for (stroke in strokes) {
+            val start = stroke.startMs.coerceAtLeast(0L)
+            val duration = stroke.holdMs.coerceIn(1L, 60000L)
+            require(start + duration <= 60000L) { "单次无障碍手势不能超过 60 秒" }
+            val path = Path().apply { moveTo(stroke.x, stroke.y) }
+            builder.addStroke(GestureDescription.StrokeDescription(path, start, duration))
+        }
+        val callback = if (onComplete == null) null else object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription) {
+                onComplete(true)
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription) {
+                onComplete(false)
+            }
+        }
+        return dispatchGesture(builder.build(), callback, null)
     }
 }

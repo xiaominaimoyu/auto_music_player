@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 
 from core.compiler import CompileParams, InputEvent
 
-# 场景各自的音符间隔(识别友好:S2 宁可慢、不可叠键,见调研「不要多点」)
+# 场景各自的最小音符间隔(识别友好:S2 宁可慢、不可叠键,见调研「不要多点」)
 FREE_PLAY_INTERVALS = {"settle_ms": 30.0, "gap_ms": 20.0}
 NPC_QUEST_INTERVALS = {"settle_ms": 60.0, "gap_ms": 120.0}
 
@@ -57,8 +57,13 @@ class Scenario:
         return dict(FREE_PLAY_INTERVALS)
 
     def apply_intervals(self, params: CompileParams) -> CompileParams:
-        """在组装好的 CompileParams 上覆盖本场景的间隔(不改原对象)。"""
-        return replace(params, **self.intervals())
+        """套用场景安全下限，同时尊重用户已经校准得更慢的参数。"""
+        minimums = self.intervals()
+        return replace(
+            params,
+            settle_ms=max(float(params.settle_ms), float(minimums["settle_ms"])),
+            gap_ms=max(float(params.gap_ms), float(minimums["gap_ms"])),
+        )
 
     def plan(self, music_events) -> ScenarioPlan:
         raise NotImplementedError

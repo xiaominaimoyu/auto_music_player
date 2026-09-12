@@ -70,6 +70,31 @@ class TestBuildEventPlan(unittest.TestCase):
         self.assertAlmostEqual(free_key_t, 30.0)
         self.assertAlmostEqual(npc_key_t, 60.0)
 
+    def test_user_settle_calibration_is_not_overwritten_by_scene(self):
+        plan, _ = build_event_plan(
+            [{"notes": ["low_1"], "dur": 0.01}],
+            _delta(),
+            "free_play",
+            bpm=100,
+            settle_ms=123.0,
+            release_settle_ms=20.0,
+            hold_ratio=1.0,
+            gap_ms=77.0,
+        )
+        key_down = next(e.t_ms for e in plan.events if e.device == "kb" and e.action == "down")
+        self.assertAlmostEqual(key_down, 123.0)
+
+    def test_event_plan_carries_global_source_indices_for_resume(self):
+        plan, _ = build_event_plan(
+            [{"notes": ["mid_1"], "dur": 0.01}],
+            _delta(),
+            "free_play",
+            **KW,
+            source_index_offset=5,
+        )
+        self.assertEqual({e.source_index for e in plan.events}, {5})
+        self.assertEqual(sum(e.source_end for e in plan.events), 1)
+
     def test_chord_degrades_with_list(self):
         plan, degs = build_event_plan([{"notes": ["mid_1", "mid_3"], "dur": 1.0}],
                                       _delta(), "free_play", **KW)

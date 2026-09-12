@@ -18,7 +18,8 @@ object NoteCodec {
             val obj = org.json.JSONObject()
             obj.put("notes", JSONArray(n.notes))
             obj.put("dur", n.dur)
-            if (n.semitone) obj.put("semitone", true)
+            // 桌面端 Schema 使用 0/1；写数值保持跨端 JSON 可导入。
+            if (n.semitone) obj.put("semitone", 1)
             arr.put(obj)
         }
         return arr.toString()
@@ -32,8 +33,15 @@ object NoteCodec {
             val ids = mutableListOf<String>()
             val nArr = obj.optJSONArray("notes") ?: JSONArray()
             for (j in 0 until nArr.length()) ids.add(nArr.getString(j))
-            result.add(NoteEvent(ids, obj.optDouble("dur", 1.0), obj.optBoolean("semitone", false)))
+            result.add(NoteEvent(ids, obj.optDouble("dur", 1.0), decodeSemitone(obj.opt("semitone"))))
         }
         return result
+    }
+
+    private fun decodeSemitone(value: Any?): Boolean = when (value) {
+        is Boolean -> value
+        is Number -> value.toInt() == 1
+        is String -> value == "1" || value.equals("true", ignoreCase = true)
+        else -> false
     }
 }

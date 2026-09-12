@@ -167,6 +167,24 @@ class TestResume(unittest.TestCase):
         replayed = [e for e in driver.events if e[0] == "press_key"]
         self.assertEqual(replayed, [("press_key", "C")])
 
+    def test_tagged_pause_returns_next_logical_source_index(self):
+        """暂停发生在修饰态事件间隙时，续播必须从完整音符/休止边界重编译。"""
+        player, driver = make_player()
+        paused = _Capture(player.paused)
+        events = [
+            InputEvent(0, "mouse", "right", "down", source_index=0),
+            InputEvent(5, "kb", "Z", "down", source_index=0),
+            InputEvent(10, "kb", "Z", "up", source_index=0, source_end=True),
+            # 原始谱面索引 1 是休止；下一发声元素是索引 2。
+            InputEvent(5000, "kb", "X", "down", source_index=2),
+        ]
+        player.play(events, interrupt_mode="pause", source_total=3, source_start_index=0)
+        self.assertTrue(wait_for_event(driver, "release_key"))
+        player.stop()
+        wait_idle(player)
+        self.assertEqual(paused.records, [(1, 3)])
+        self.assertEqual(player.resume_source_index, 1)
+
 
 class TestInterruptSemantics(unittest.TestCase):
     LONG = [

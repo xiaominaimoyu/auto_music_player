@@ -26,7 +26,7 @@ class SessionManager(
      * 启动演奏会话。
      *
      * @param notes    简谱音符列表
-     * @param params   编译参数(场景会覆盖间隔策略)
+     * @param params   编译参数(场景仅施加安全下限)
      * @param layout   三角洲布局
      * @param scenario 场景适配器
      * @param screenW  屏幕宽度
@@ -58,14 +58,16 @@ class SessionManager(
         return result
     }
 
-    /** 从暂停态续播(FreePlay 场景)。 */
-    fun resumeSession() {
-        val plan = currentPlan ?: return
-        val st = player.state.value
-        val startIndex = (st as? DeltaPlayerEngine.State.Paused)?.done ?: 0
+    /** 从暂停态续播(FreePlay 场景)。失败时返回 false，供 UI 提示重新开始。 */
+    fun resumeSession(): Boolean {
+        if (!AmpAccessibilityService.ready) return false
+        val plan = currentPlan ?: return false
+        val st = player.state.value as? DeltaPlayerEngine.State.Paused ?: return false
+        val startIndex = st.done
         PlaybackService.start(context)
         active = true
         player.play(plan, startIndex)
+        return true
     }
 
     /** 用户主动结束会话。 */

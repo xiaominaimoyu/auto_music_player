@@ -52,6 +52,10 @@ class InputEvent:
     device: str   # "kb" | "mouse"
     key: str
     action: str   # "down" | "up"
+    # 对应原始谱面元素。None 表示场景收尾等非谱面事件。
+    source_index: int | None = None
+    # True 表示该谱面元素已经完整发声；EventPlayer 据此在暂停时从完整音符边界续播。
+    source_end: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,10 +170,10 @@ def _expand(el, params: CompileParams):
     raise TypeError(f"未知 IR 元素类型: {type(el)!r}")
 
 
-def _flatten(elements, params: CompileParams):
+def _flatten(elements, params: CompileParams, source_index_offset: int = 0):
     """IR 序列 → 扁平计划(plan)。
 
-    plan 项:{"kind": "note"|"rest", "dur", "button", "key", "index"}
+    plan 项:{"kind": "note"|"rest", "dur", "button", "key", "index", "source_index"}
     被丢弃的元素(和弦 / 冲突拒绝)转为等长休止,保证时间轴不塌缩。
     """
     plan, degradations, skipped = [], [], 0
@@ -178,12 +182,15 @@ def _flatten(elements, params: CompileParams):
         if deg is not None:
             degradations.append(replace(deg, index=idx))
 
+        source_index = idx + source_index_offset
         if rest_dur is not None:
-            plan.append({"kind": "rest", "dur": rest_dur, "index": idx})
+            plan.append({"kind": "rest", "dur": rest_dur, "index": idx,
+                         "source_index": source_index})
             continue
         if not notes:
             skipped += 1
-            plan.append({"kind": "rest", "dur": el.dur, "index": idx})
+            plan.append({"kind": "rest", "dur": el.dur, "index": idx,
+                         "source_index": source_index})
             continue
 
         for note in notes:
@@ -193,7 +200,12 @@ def _flatten(elements, params: CompileParams):
                 degradations.append(replace(mod_deg, index=idx))
             if mod is None:
                 skipped += 1
-                plan.append({"kind": "rest", "dur": note.dur, "index": idx})
+                plan.append({
+                    "kind": "rest",
+                    "dur": note.dur,
+                    "index": idx,
+                    "source_index": source_index,
+                })
                 continue
             # 物理直达键命中则不再按修饰键(决策 D3)
             # 半音守卫:带 semitone 的音不能走直达键(直达键不含半音修饰态),
@@ -207,11 +219,11 @@ def _flatten(elements, params: CompileParams):
                 key = params.pitch_keys[note.pitch - 1]
                 button = params.modifier_buttons.get(mod)
             plan.append({"kind": "note", "dur": note.dur, "button": button,
-                         "key": key, "index": idx})
+                         "key": key, "index": idx, "source_index": source_index})
     return plan, degradations, skipped
 
 
-def compile_score(elements, params: CompileParams, timings=None) -> CompileResult:
+def compile_score(elements, params: CompileParams, timings=None, *, source_index_offset: int = 0) -> CompileResult:
     """把 IR 序列编译成输入事件序列。
 
     timings(可选):与 elements 等长的真人化塑形结果,由
@@ -226,8 +238,13 @@ def compile_score(elements, params: CompileParams, timings=None) -> CompileResul
     settle = float(params.settle_ms)
     release_settle = float(params.release_settle_ms)
 
-    plan, degradations, skipped = _flatten(elements, params)
+    if int(source_index_offset) < 0:
+        raise ValueError("source_index_offset 不能为负数")
+    source_index_offset = int(source_index_offset)
+    plan, degradations, skipped = _flatten(elements, params, source_index_offset)
     result = CompileResult(degradations=degradations, skipped=skipped)
+    # cursor 是未加 jitter 的逻辑时间轴。真人化只改变当前音的实际起音，
+    # 不能反向推移下一拍，否则随机偏移会在长曲中累计漂移。
     cursor = 0.0
     held = None
     prev_kb_up = None   # 上一音符音键抬起时刻(链式防叠键下限)
@@ -235,7 +252,9 @@ def compile_score(elements, params: CompileParams, timings=None) -> CompileResul
     for i, item in enumerate(plan):
         if item["kind"] == "rest":
             if held:
-                result.events.append(InputEvent(cursor, "mouse", held, "up"))
+                result.events.append(InputEvent(
+                    cursor, "mouse", held, "up", item["source_index"]
+                ))
                 cursor += release_settle
                 held = None
             cursor += item["dur"] * beat_ms + gap
@@ -245,19 +264,24 @@ def compile_score(elements, params: CompileParams, timings=None) -> CompileResul
             off_ms, ratio_i = timings[item["index"]]
         else:
             off_ms, ratio_i = 0.0, params.hold_ratio
-        t = cursor + float(off_ms)
+        nominal_t = cursor
+        t = max(0.0, nominal_t + float(off_ms))
         # 链式防叠键:仅真人化模式需要——偏移可能把起音提前到上一音释放之前;
         # 机械模式下 cursor 已保证 t ≥ 上一音释放,保持精确时序不变
         if timings is not None and prev_kb_up is not None:
             t = max(t, prev_kb_up + 1.0)
 
+        nxt = plan[i + 1] if i + 1 < len(plan) else None
+        source_end = nxt is None or nxt["source_index"] != item["source_index"]
         button = item["button"]
         if button and button != held:
             if held:                      # 切换修饰键:先松旧的,留足间隔再按新的
-                result.events.append(InputEvent(t, "mouse", held, "up"))
+                result.events.append(InputEvent(t, "mouse", held, "up", item["source_index"]))
                 t += release_settle
-            result.events.append(InputEvent(t, "mouse", button, "down"))
+                nominal_t += release_settle
+            result.events.append(InputEvent(t, "mouse", button, "down", item["source_index"]))
             t += settle
+            nominal_t += settle
             held = button
 
         dur_ms = item["dur"] * beat_ms
@@ -268,21 +292,31 @@ def compile_score(elements, params: CompileParams, timings=None) -> CompileResul
                 item["index"], f"hold {dur_ms:.0f}ms", f"{hold:.0f}ms", "MAX_HOLD"))
 
         t_up = t + hold
-        result.events.append(InputEvent(t, "kb", item["key"], "down"))
-        result.events.append(InputEvent(t_up, "kb", item["key"], "up"))
+        nominal_t_up = nominal_t + hold
+        result.events.append(InputEvent(t, "kb", item["key"], "down", item["source_index"]))
+        result.events.append(InputEvent(
+            t_up, "kb", item["key"], "up", item["source_index"], source_end=source_end
+        ))
         prev_kb_up = t_up
 
         release_end = t_up
-        nxt = plan[i + 1] if i + 1 < len(plan) else None
+        nominal_release_end = nominal_t_up
         next_button = nxt["button"] if (nxt and nxt["kind"] == "note") else None
         if held and held != next_button:
             release_end = t_up + release_settle
-            result.events.append(InputEvent(release_end, "mouse", held, "up"))
+            nominal_release_end = nominal_t_up + release_settle
+            result.events.append(InputEvent(
+                release_end, "mouse", held, "up", item["source_index"]
+            ))
             held = None
 
         result.note_count += 1
-        # 不叠键:下一音起点不早于上一音完全释放
-        cursor = max(t + dur_ms + gap, release_end + gap)
+        # 保持理想拍点；只有真实的键释放会撞到下一拍时，才以物理下限延后。
+        cursor = max(
+            nominal_t + dur_ms + gap,
+            nominal_release_end + gap,
+            release_end + gap,
+        )
 
     if held:                              # 收尾兜底
         result.events.append(InputEvent(cursor, "mouse", held, "up"))

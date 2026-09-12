@@ -1,5 +1,13 @@
 package com.automusic.player.input
 
+/** 单个 Stroke 的相对开始时刻与按住时长，用于同一原子无障碍手势。 */
+data class TimedTouch(
+    val x: Float,
+    val y: Float,
+    val startMs: Long,
+    val holdMs: Long,
+)
+
 /**
  * 触摸注入器:无障碍 dispatchGesture 通道(完全自主运行,零外部依赖)。
  *
@@ -33,6 +41,26 @@ object TouchInjector {
             )
         svc.chord(coords, holdMs)
         android.util.Log.i(TAG, "gesture dispatched pointers=${coords.size} hold=${holdMs}ms")
+    }
+
+    /**
+     * 派发同一条 GestureDescription 中的多段 stroke。
+     *
+     * 修饰钮和音格必须通过此方法同批派发，不能拆成多次 dispatchGesture；
+     * 后者会取消先前仍在执行的手势。
+     */
+    fun dispatchTimeline(strokes: List<TimedTouch>, onComplete: (Boolean) -> Unit): Boolean {
+        require(strokes.isNotEmpty()) { "手势 stroke 不能为空" }
+        val svc = AmpAccessibilityService.instance
+            ?: error(
+                "无障碍注入服务未开启:" +
+                    "请到「演奏」页点「去开启」,在系统无障碍设置中启用本服务的触摸注入"
+            )
+        val accepted = svc.timeline(strokes, onComplete)
+        if (accepted) {
+            android.util.Log.i(TAG, "timeline dispatched strokes=${strokes.size}")
+        }
+        return accepted
     }
 
     /** 单点轻触(标定/测试用)。 */

@@ -60,15 +60,15 @@ tab = PlayerTab(db, player, player_cfg, config_path="config.yaml",
                 profile=profile, profiles=profiles, event_player=event_player)
 
 check("默认档位 → 旧 Player 路径", tab._use_event_path() is False)
-check("默认档位 → _active_player 是旧 Player", tab._active_player() is player)
+check("默认档位 → 绑定旧 Player", not tab._use_event_path() and tab._player is player)
 
 delta = resolve_profile(profiles, "delta_force_harmonica")
 tab._profile = delta
 check("三角洲档位 → 事件路径", tab._use_event_path() is True)
-check("三角洲档位 → _active_player 是 EventPlayer", tab._active_player() is event_player)
-check("倒计时秒数来自 config", tab._countdown_seconds == int(player_cfg.get("countdown_seconds", 3)),
-      f"→ {tab._countdown_seconds}")
-
+check(
+    "三角洲档位 → 绑定 EventPlayer",
+    tab._use_event_path() and tab._event_player is event_player,
+)
 # 真实编译一次《小星星》片段（不播放）
 from gui.player_tab import build_event_plan              # noqa: E402
 notes = [{"notes": ["mid_1"], "dur": 1.0}, {"notes": ["mid_1"], "dur": 1.0},
