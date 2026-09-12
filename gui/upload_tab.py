@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 from core.parser import parse_jianpu
 from core.prompt import JIANPU_PROMPT
 from core.score_model import validate_notes
+from core.jianpu_editor import insert_rest, delete_event
 from gui.widgets import AppDialog, BottomResizableCard
 
 
@@ -59,9 +60,13 @@ class PromptCard(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
-        lay.addLayout(_step_row(
-            "1", "复制识别提示词",
-            "把提示词粘贴到任意外部 AI 工具(如 ChatGPT / 豆包 / Kimi),并附上乐谱图片一起发送"))
+        lay.addLayout(
+            _step_row(
+                "1",
+                "复制识别提示词",
+                "把提示词粘贴到任意外部 AI 工具(如 ChatGPT / 豆包 / Kimi),并附上乐谱图片一起发送",
+            )
+        )
         self.prompt_view = QPlainTextEdit()
         self.prompt_view.setPlainText(JIANPU_PROMPT)
         self.prompt_view.setReadOnly(True)
@@ -79,7 +84,8 @@ class PromptCard(QFrame):
     def _copy(self):
         QApplication.clipboard().setText(JIANPU_PROMPT)
         AppDialog.show_info(
-            self, "提示词已复制",
+            self,
+            "提示词已复制",
             "已复制到剪贴板。\n\n使用方法:\n"
             "1. 粘贴到任意外部 AI 工具(如 ChatGPT / 豆包 / Kimi)\n"
             "2. 附上乐谱图片一起发送\n"
@@ -137,12 +143,17 @@ class UploadTab(QWidget):
         # 步骤2:粘贴简谱并解析(底部边缘可拖高)
         card2, lay2 = self._card(resizable=True)
         card2.setup(height=220, min_height=160)
-        lay2.addLayout(_step_row(
-            "2", "简谱粘贴与解析",
-            "外部 AI 工具识别出的简谱直接粘贴到这里 · 支持手动输入与修改,修改后重新「解析到校对表格」"))
+        lay2.addLayout(
+            _step_row(
+                "2",
+                "简谱粘贴与解析",
+                "外部 AI 工具识别出的简谱直接粘贴到这里 · 支持手动输入与修改,修改后重新「解析到校对表格」",
+            )
+        )
         self.raw_text = QPlainTextEdit()
         self.raw_text.setPlaceholderText(
-            "把外部 AI 工具返回的简谱粘贴到这里,如:1 1 5 5 6 6 5- 4 4 3 3 2 2 1- ...")
+            "把外部 AI 工具返回的简谱粘贴到这里,如:1 1 5 5 6 6 5- 4 4 3 3 2 2 1- ..."
+        )
         self.raw_text.setCursor(Qt.CursorShape.IBeamCursor)
         lay2.addWidget(self.raw_text, 1)
         btn_row = QHBoxLayout()
@@ -158,16 +169,55 @@ class UploadTab(QWidget):
         # 步骤3:校对表格(底部边缘可拖高,总滚动条随高度同步)
         card3, lay3 = self._card(resizable=True)
         card3.setup(height=300, min_height=220)
-        lay3.addLayout(_step_row("3", "校对表格", "音符列可写和弦,如 high_1,mid_3;时值单位:拍"))
+        lay3.addLayout(
+            _step_row("3", "校对表格", "音符列可写和弦,如 high_1,mid_3;时值单位:拍")
+        )
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["音符", "时值(拍)", "半音"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         lay3.addWidget(self.table, 1)
+
+        # 编辑按钮组
         edit_row = QHBoxLayout()
+
+        # 音符编辑按钮(插入休止符/删除音符)
+        insert_before_btn = QPushButton("← 前插半拍休止")
+        insert_before_btn.setObjectName("BtnSecondary")
+        insert_before_btn.setToolTip("在选中音符前插入半拍休止符 (0_)")
+        insert_before_btn.clicked.connect(
+            lambda: self._insert_rest_at_selection(before=True)
+        )
+
+        insert_after_btn = QPushButton("后插半拍休止 →")
+        insert_after_btn.setObjectName("BtnSecondary")
+        insert_after_btn.setToolTip("在选中音符后插入半拍休止符 (0_)")
+        insert_after_btn.clicked.connect(
+            lambda: self._insert_rest_at_selection(before=False)
+        )
+
+        delete_note_btn = QPushButton("删除选中音符")
+        delete_note_btn.setObjectName("BtnDanger")
+        delete_note_btn.setToolTip("删除选中的音符")
+        delete_note_btn.clicked.connect(self._delete_selected_note)
+
+        edit_row.addWidget(insert_before_btn)
+        edit_row.addWidget(insert_after_btn)
+        edit_row.addWidget(delete_note_btn)
+        edit_row.addStretch(1)
+        lay3.addLayout(edit_row)
+
+        # 表格操作按钮
+        table_row = QHBoxLayout()
         add_btn = QPushButton("添加行")
         add_btn.setObjectName("BtnSecondary")
         add_btn.clicked.connect(lambda: self.table.insertRow(self.table.rowCount()))
@@ -177,11 +227,12 @@ class UploadTab(QWidget):
         clear_btn = QPushButton("清空表格")
         clear_btn.setObjectName("BtnDanger")
         clear_btn.clicked.connect(lambda: self.table.setRowCount(0))
-        edit_row.addWidget(add_btn)
-        edit_row.addWidget(del_btn)
-        edit_row.addWidget(clear_btn)
-        edit_row.addStretch(1)
-        lay3.addLayout(edit_row)
+        table_row.addWidget(add_btn)
+        table_row.addWidget(del_btn)
+        table_row.addWidget(clear_btn)
+        table_row.addStretch(1)
+        lay3.addLayout(table_row)
+
         self._fix_card_cursors(card3)
         inner_layout.addWidget(card3)
 
@@ -219,7 +270,9 @@ class UploadTab(QWidget):
     def _parse(self):
         raw = self.raw_text.toPlainText().strip()
         if not raw:
-            AppDialog.show_warning(self, "提示", "请先把外部 AI 工具识别出的简谱粘贴到输入框")
+            AppDialog.show_warning(
+                self, "提示", "请先把外部 AI 工具识别出的简谱粘贴到输入框"
+            )
             return
         try:
             notes = parse_jianpu(raw)
@@ -236,12 +289,83 @@ class UploadTab(QWidget):
             notes_str = ",".join(n["notes"]) if n["notes"] else "(休止)"
             self.table.setItem(row, 0, QTableWidgetItem(notes_str))
             self.table.setItem(row, 1, QTableWidgetItem(str(n["dur"])))
-            self.table.setItem(row, 2, QTableWidgetItem("#" if n.get("semitone") else ""))
+            self.table.setItem(
+                row, 2, QTableWidgetItem("#" if n.get("semitone") else "")
+            )
 
     def _delete_selected_rows(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
         for r in rows:
             self.table.removeRow(r)
+
+    def _insert_rest_at_selection(self, before: bool):
+        """在选中音符的前/后插入半拍休止符。"""
+        selected = self.table.selectedIndexes()
+        if not selected:
+            AppDialog.show_warning(self, "提示", "请先在表格中选中一个音符")
+            return
+
+        # 获取选中的行索引(第一个选中的)
+        row = selected[0].row()
+
+        # 获取原始简谱文本
+        raw = self.raw_text.toPlainText().strip()
+        if not raw:
+            AppDialog.show_warning(self, "提示", "简谱文本为空,无法编辑")
+            return
+
+        try:
+            # 在指定位置插入休止符
+            new_text = insert_rest(raw, row, before=before, rest_token="0_")
+
+            # 更新简谱文本
+            self.raw_text.setPlainText(new_text)
+
+            # 重新解析到表格
+            self._parse()
+
+            # 自动选中新插入的休止符所在行
+            new_row = row if before else row + 1
+            if 0 <= new_row < self.table.rowCount():
+                self.table.selectRow(new_row)
+
+        except Exception as e:
+            AppDialog.show_error(self, "插入失败", str(e))
+
+    def _delete_selected_note(self):
+        """删除选中的音符。"""
+        selected = self.table.selectedIndexes()
+        if not selected:
+            AppDialog.show_warning(self, "提示", "请先在表格中选中要删除的音符")
+            return
+
+        # 获取选中的行索引
+        row = selected[0].row()
+
+        # 获取原始简谱文本
+        raw = self.raw_text.toPlainText().strip()
+        if not raw:
+            AppDialog.show_warning(self, "提示", "简谱文本为空,无法删除")
+            return
+
+        try:
+            # 删除指定音符
+            new_text = delete_event(raw, row)
+
+            # 更新简谱文本
+            self.raw_text.setPlainText(new_text)
+
+            # 重新解析到表格
+            self._parse()
+
+            # 尝试选中下一行(如果存在)
+            if row < self.table.rowCount():
+                self.table.selectRow(row)
+            elif self.table.rowCount() > 0:
+                self.table.selectRow(self.table.rowCount() - 1)
+
+        except Exception as e:
+            AppDialog.show_error(self, "删除失败", str(e))
 
     def _table_to_notes(self):
         notes = []
@@ -259,7 +383,11 @@ class UploadTab(QWidget):
                 dur = float(dur_str)
             except ValueError:
                 raise ValueError(f"第 {row + 1} 行时值不是数字: {dur_str}")
-            note_ids = [] if notes_str == "(休止)" else [x.strip() for x in notes_str.split(",") if x.strip()]
+            note_ids = (
+                []
+                if notes_str == "(休止)"
+                else [x.strip() for x in notes_str.split(",") if x.strip()]
+            )
             item = {"notes": note_ids, "dur": dur}
             semi_text = item_semi.text().strip() if item_semi is not None else ""
             if semi_text in ("#", "1"):

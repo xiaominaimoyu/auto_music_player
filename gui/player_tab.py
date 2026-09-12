@@ -174,8 +174,25 @@ class PlayerTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 24, 32, 24)
-        root.setSpacing(16)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # 使用 QScrollArea 包裹所有内容,避免窗口缩小时重叠
+        from PyQt6.QtWidgets import QScrollArea
+
+        scroll = QScrollArea()
+        scroll.setObjectName("ContentScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        inner.setObjectName("ContentInner")
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(32, 24, 32, 24)
+        inner_layout.setSpacing(16)
+        scroll.setWidget(inner)
+        root.addWidget(scroll)
 
         title = QLabel("演奏控制")
         title.setObjectName("PageTitle")
@@ -185,7 +202,7 @@ class PlayerTab(QWidget):
         header.addWidget(title)
         header.addWidget(self.state_label)
         header.addStretch(1)
-        root.addLayout(header)
+        inner_layout.addLayout(header)
 
         # 游戏档位(仅当注入了档位列表时显示)
         if self._profiles:
@@ -210,7 +227,7 @@ class PlayerTab(QWidget):
             lay.addWidget(self.scenario_combo)
             # 场景下拉仅在事件路径(三角洲档位)时可见
             self._update_scenario_visibility()
-            root.addWidget(card)
+            inner_layout.addWidget(card)
 
         # 选择乐谱
         card, lay = self._card("选择乐谱")
@@ -220,7 +237,7 @@ class PlayerTab(QWidget):
         self.combo = QComboBox()
         self.combo.currentIndexChanged.connect(self._on_select)
         lay.addWidget(self.combo)
-        root.addWidget(card)
+        inner_layout.addWidget(card)
 
         # 演奏速度 + 信息卡
         card, lay = self._card("演奏速度")
@@ -252,7 +269,7 @@ class PlayerTab(QWidget):
         self.info_count = self._info_item(info_layout, "音符数", "-")
         self.info_duration = self._info_item(info_layout, "预计时长", "-")
         lay.addWidget(info)
-        root.addWidget(card)
+        inner_layout.addWidget(card)
 
         # 控制
         card, lay = self._card("演奏控制")
@@ -309,8 +326,8 @@ class PlayerTab(QWidget):
             f"background: #1E1E28; border-radius: 8px; border: 1px solid #26262F;"
         )
         lay.addWidget(hint)
-        root.addWidget(card)
-        root.addStretch(1)
+        inner_layout.addWidget(card)
+        inner_layout.addStretch(1)
 
     def _info_item(self, layout, label_text, value_text):
         col = QVBoxLayout()
