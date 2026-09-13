@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from core import ir as ir_mod
 from core.compiler import compile_score
+from core.event_logger import get_event_logger
 from core.humanize import HumanizeParams, plan_timings
 from core.profile import resolve_profile
 from core.scenario import SCENARIOS, get_scenario
@@ -430,6 +431,21 @@ class PlayerTab(QWidget):
         self.progress_state.setText(
             f"{self._countdown_left} 秒后开始演奏,请切换到游戏窗口..."
         )
+
+        # 记录控制事件
+        try:
+            logger = get_event_logger()
+            action = "resume" if start_index > 0 else "start"
+            logger.log_control(
+                action=action,
+                score_name=score["name"],
+                bpm=self.bpm_spin.value(),
+                start_index=start_index,
+                total_notes=len(score["notes"]),
+            )
+        except Exception:
+            pass
+
         self._countdown_timer = QTimer(self)
         self._countdown_timer.timeout.connect(self._countdown_tick)
         self._countdown_timer.start(1000)
@@ -458,6 +474,18 @@ class PlayerTab(QWidget):
         if pid is None:
             return
         self._profile = resolve_profile(self._profiles, pid)
+
+        # 记录控制事件
+        try:
+            logger = get_event_logger()
+            logger.log_control(
+                action="gear_change",
+                gear_id=self._profile.id,
+                gear_name=self._profile.name,
+            )
+        except Exception:
+            pass
+
         if self._config_path:
             try:
                 _update_active_profile(self._config_path, self._profile.id)
@@ -525,6 +553,20 @@ class PlayerTab(QWidget):
         self._countdown_timer.stop()
         notes, bpm, start_index, score_name = self._pending
         self._start_focus_watch()
+
+        # 记录控制事件:倒计时结束,实际开始演奏
+        try:
+            logger = get_event_logger()
+            logger.log_control(
+                action="play_started",
+                score_name=score_name,
+                bpm=bpm,
+                start_index=start_index,
+                path_type="event" if self._use_event_path() else "legacy",
+            )
+        except Exception:
+            pass
+
         if self._use_event_path():
             self._play_event(notes, bpm, start_index, score_name)
         else:
@@ -556,7 +598,25 @@ class PlayerTab(QWidget):
             self.play_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
             self.progress_state.setText("已取消")
+
+            # 记录控制事件
+            try:
+                logger = get_event_logger()
+                logger.log_control(action="cancel_countdown")
+            except Exception:
+                pass
             return
+
+        # 记录控制事件
+        try:
+            logger = get_event_logger()
+            logger.log_control(
+                action="pause",
+                note_index=self._player.current_index if self._player else -1,
+            )
+        except Exception:
+            pass
+
         self._stop_all()
 
     # ---------- 焦点检测 ----------
@@ -604,10 +664,36 @@ class PlayerTab(QWidget):
             self.progress_state.setText(
                 f"已锁定目标窗口: {self._policy.target.get('title') or '未命名窗口'}"
             )
+            # 记录焦点锁定事件
+            try:
+                logger = get_event_logger()
+                if self._policy.target:
+                    logger.log_focus(
+                        event="regained",
+                        window_title=self._policy.target.get("title", ""),
+                        hwnd=self._policy.target.get("hwnd", 0),
+                        note_index=self._player.current_index if self._player else -1,
+                    )
+            except Exception:
+                pass
 
     def _pause_for_focus(self):
         self._focus_timer.stop()
         self._focus_lost = True
+
+        # 记录焦点丢失事件
+        try:
+            logger = get_event_logger()
+            current = self._watcher.capture_current()
+            logger.log_focus(
+                event="lost",
+                window_title=current.get("title", "") if current else "",
+                hwnd=current.get("hwnd", 0) if current else 0,
+                note_index=self._player.current_index if self._player else -1,
+            )
+        except Exception:
+            pass
+
         self._stop_all()
         self.progress_state.setText("目标窗口失去焦点,正在暂停...")
 
@@ -694,9 +780,7 @@ class PlayerTab(QWidget):
         self.stop_btn.setEnabled(False)
         self.reset_btn.setEnabled(True)
         self.state_label.setText("已暂停")
-        resume_hint = (
-            f" · 下次从第 {done + 1} 项继续" if done < total else ""
-        )
+        resume_hint = f" · 下次从第 {done + 1} 项继续" if done < total else ""
         self.progress_state.setText(
             f"已暂停于 {done} / {total}{resume_hint} · 「继续演奏」或「重置」"
         )
@@ -706,6 +790,13 @@ class PlayerTab(QWidget):
 
     def _reset(self):
         """重置:清空暂停进度,回到未开始态(仅在暂停态可点击)。"""
+        # 记录控制事件
+        try:
+            logger = get_event_logger()
+            logger.log_control(action="reset")
+        except Exception:
+            pass
+
         self._clear_pause()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -732,7 +823,11 @@ class PlayerTab(QWidget):
         if normal:
             self.state_label.setText("就绪")
             if summary is None:
-                suffix = f" · 已降级 {event_degradation_count} 处" if event_degradation_count else ""
+                suffix = (
+                    f" · 已降级 {event_degradation_count} 处"
+                    if event_degradation_count
+                    else ""
+                )
                 self.progress_state.setText(f"演奏完成{suffix}")
         elif not self._had_error:
             self.state_label.setText("就绪")
