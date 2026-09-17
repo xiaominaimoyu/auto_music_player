@@ -34,6 +34,10 @@ AI_MISSING_SEPARATOR_REASON = (
     "疑似缺少音符分隔空格；请按每个音符一个记号重新输出，"
     "低音使用英文逗号 ,，下划线 _ 仅表示时值"
 )
+AI_UNSUPPORTED_OCTAVE_REASON = (
+    "超出低/中/高三音区；请将整个连续乐句统一移动八度，"
+    "不要使用重复的 ' 或 ,"
+)
 
 
 @dataclass
@@ -229,6 +233,15 @@ def _adjacent_note_fragments(line: str) -> list[str]:
     return [line[start:end] for start, end in ranges]
 
 
+def _unsupported_octave_fragments(line: str) -> list[str]:
+    """找出项目三音区模型无法表示的重复/混合八度标记。"""
+    return [
+        match.group(0)
+        for match in _NOTE_RE.finditer(line)
+        if sum(ch in "'," for ch in match.group(0)[1:]) > 1
+    ]
+
+
 def _parse_line(line: str, *, strict_ai: bool = False):
     """解析单行,返回 (音符序列, 问题列表)。问题为 (token, 原因)。"""
     line = _normalize_delta_community_notation(line)
@@ -238,6 +251,10 @@ def _parse_line(line: str, *, strict_ai: bool = False):
         problems.extend(
             (fragment, AI_MISSING_SEPARATOR_REASON)
             for fragment in _adjacent_note_fragments(line)
+        )
+        problems.extend(
+            (fragment, AI_UNSUPPORTED_OCTAVE_REASON)
+            for fragment in _unsupported_octave_fragments(line)
         )
     consumed = bytearray(len(line))
     tokens = []  # (起始位置, 原文, 音符 dict 或 None, 问题或 None)

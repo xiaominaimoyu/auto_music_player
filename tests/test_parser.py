@@ -113,6 +113,21 @@ class TestCollectMode(unittest.TestCase):
     def test_default_returns_list(self):
         self.assertIsInstance(parse_jianpu("1 2"), list)
 
+    def test_strict_ai_rejects_octaves_outside_three_region_model(self):
+        notes, errors = parse_jianpu("5' 1'' 7,,", collect=True, strict_ai=True)
+        self.assertEqual([n["notes"][0] for n in notes], ["high_5", "high_1", "low_7"])
+        self.assertEqual([e.token for e in errors], ["1''", "7,,"])
+        self.assertTrue(all("三音区" in e.reason for e in errors))
+
+    def test_lenient_double_octave_keeps_legacy_behavior(self):
+        self.assertEqual(
+            parse_jianpu("1'' 7,,"),
+            [
+                {"notes": ["high_1"], "dur": 1.0},
+                {"notes": ["low_7"], "dur": 1.0},
+            ],
+        )
+
 
 class TestTokenOrder(unittest.TestCase):
     def test_mixed_chord_keeps_position(self):

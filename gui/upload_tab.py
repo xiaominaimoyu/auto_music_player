@@ -24,7 +24,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.parser import AI_MISSING_SEPARATOR_REASON, parse_jianpu
+from core.parser import (
+    AI_MISSING_SEPARATOR_REASON,
+    AI_UNSUPPORTED_OCTAVE_REASON,
+    parse_jianpu,
+)
 from core.prompt import JIANPU_PROMPT
 from core.preview_player import PreviewPlayer
 from core.score_model import validate_notes
@@ -310,16 +314,15 @@ class UploadTab(QWidget):
             AppDialog.show_error(self, "解析失败", str(e))
             return
         self._last_parse_errors = errors
-        fatal_errors = [
-            error for error in errors if error.reason == AI_MISSING_SEPARATOR_REASON
-        ]
+        fatal_reasons = {AI_MISSING_SEPARATOR_REASON, AI_UNSUPPORTED_OCTAVE_REASON}
+        fatal_errors = [error for error in errors if error.reason in fatal_reasons]
         if fatal_errors:
             preview = "；".join(str(e) for e in fatal_errors[:2])
             more = f"；另有 {len(fatal_errors) - 2} 处" if len(fatal_errors) > 2 else ""
             self.table.setRowCount(0)
             self._update_preview_button()
             message = (
-                f"检测到 {len(fatal_errors)} 处无法安全判断的 AI 粘连记号："
+                f"检测到 {len(fatal_errors)} 处无法安全解析的 AI 记号："
                 f"{preview}{more}。请修正原文并重新解析；为避免错误变调，本次结果未进入校对表格。"
             )
             self.parse_status.setText(message)
