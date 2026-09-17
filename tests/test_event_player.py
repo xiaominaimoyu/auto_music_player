@@ -120,6 +120,21 @@ class TestDispatchOrder(unittest.TestCase):
         panic = [p for k, p in driver.events if k == "panic_release"]
         self.assertEqual(panic, [(("B",), ("left",))])
 
+    def test_dispatch_guard_blocks_down_but_never_blocks_cleanup(self):
+        player, driver = make_player()
+        errors = _Capture(player.error_occurred)
+        player.set_dispatch_guard(lambda: (False, "目标窗口已失焦"))
+        player.play(
+            [
+                InputEvent(0, "mouse", "right", "down"),
+                InputEvent(1, "kb", "Z", "down"),
+            ]
+        )
+        wait_idle(player)
+        self.assertFalse(any(kind.startswith("press") for kind, _ in driver.events))
+        self.assertEqual(errors.records, [("目标窗口已失焦",)])
+        self.assertTrue(any(kind == "panic_release" for kind, _ in driver.events))
+
 
 class TestResume(unittest.TestCase):
     def test_start_index_skips_prior_events(self):
@@ -274,6 +289,29 @@ class TestEdgeCases(unittest.TestCase):
         player.shutdown()
         self.assertFalse(player.is_playing)
         self.assertEqual(driver.events, [], "闲置时 shutdown 不应产生驱动调用")
+
+    def test_shutdown_timeout_runs_caller_thread_release_fallback(self):
+        player, driver = make_player()
+
+        class StuckThread:
+            def __init__(self):
+                self.joined = False
+
+            def is_alive(self):
+                return True
+
+            def join(self, _timeout):
+                self.joined = True
+
+        thread = StuckThread()
+        player._thread = thread
+        player._active_events = [
+            InputEvent(0, "mouse", "right", "down"),
+            InputEvent(1, "kb", "Z", "down"),
+        ]
+        player.shutdown(join_timeout=0.001)
+        self.assertTrue(thread.joined)
+        self.assertIn(("panic_release", (("Z",), ("right",))), driver.events)
 
     def test_finished_false_on_driver_error(self):
         player, driver = make_player()

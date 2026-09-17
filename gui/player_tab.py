@@ -4,9 +4,11 @@
 """
 
 import random
+import threading
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -23,10 +25,13 @@ from core import ir as ir_mod
 from core.compiler import compile_score
 from core.event_logger import get_event_logger
 from core.humanize import HumanizeParams, plan_timings
-from core.profile import resolve_profile
+from core.practice import PracticeSession, build_dual_rail_hint, build_practice_cues
 from core.preview_player import PreviewPlayer
+from core.profile import resolve_profile
 from core.scenario import SCENARIOS, get_scenario
+from core.transport import normalize_transport_preferences, prepare_score
 from core.window_monitor import FocusLockPolicy, ForegroundWatcher
+from core.windows_reliability import inspect_target_elevation
 from gui.theme import BRAND, INK_2, INK_3, STATE_INFO
 from gui.widgets import AppDialog
 
@@ -109,6 +114,9 @@ def _update_active_profile(path: str, profile_id: str):
 
 
 class PlayerTab(QWidget):
+    practice_input = pyqtSignal(object, object)
+    practice_stop_requested = pyqtSignal()
+
     def __init__(
         self,
         db,
@@ -151,6 +159,23 @@ class PlayerTab(QWidget):
         self._paused_done = 0
         self._paused_total = 0
         self._event_degradation_count = 0
+        self._transport_degradation_count = 0
+        self._transport_degradations = []
+        self._loading_preferences = False
+        self._active_notes = []
+        self._active_source_start = 0
+        self._practice_active = False
+        self._practice_notes = []
+        self._practice_index = 0
+        self._practice_bpm = 100
+        self._practice_session = None
+        self._practice_keyboard_listener = None
+        self._practice_mouse_listener = None
+        self._practice_keys = set()
+        self._practice_mouse = set()
+        self._practice_lock = threading.Lock()
+        practice_cfg = player_cfg.get("practice_input") or {}
+        self._practice_input_enabled = bool(practice_cfg.get("enabled", True))
         # 焦点检测:丢失目标窗口焦点时自动暂停,恢复后由用户选择续播或从头
         focus_cfg = player_cfg.get("focus_check") or {}
         self._focus_enabled = bool(focus_cfg.get("enabled", True))
@@ -158,18 +183,29 @@ class PlayerTab(QWidget):
         self._target_title = str(focus_cfg.get("target_window_title", "") or "")
         self._watcher = ForegroundWatcher(poll_interval=self._poll_interval_ms / 1000.0)
         self._policy = None
+        self._guard_target = None
+        self._target_elevation = None
         self._mini_mode = False
         self._focus_lost = False
         self._build_ui()
         self._focus_timer = QTimer(self)
         self._focus_timer.setInterval(self._poll_interval_ms)
         self._focus_timer.timeout.connect(self._check_focus)
+        self._practice_timer = QTimer(self)
+        self._practice_timer.setSingleShot(True)
+        self._practice_timer.timeout.connect(self._practice_tick)
+        self.practice_input.connect(self._on_practice_input)
+        self.practice_stop_requested.connect(self._stop)
+        if hasattr(self._player, "set_dispatch_guard"):
+            self._player.set_dispatch_guard(self._dispatch_allowed)
         self._player.progress.connect(self._on_progress)
         self._player.finished.connect(self._on_finished)
         self._player.paused.connect(self._on_paused)
         self._player.error_occurred.connect(self._on_error)
         # 事件演奏器(M4)的信号接到同一组 UI 处理(任意时刻只有一条路径在跑)
         if self._event_player is not None:
+            if hasattr(self._event_player, "set_dispatch_guard"):
+                self._event_player.set_dispatch_guard(self._dispatch_allowed)
             self._event_player.progress.connect(self._on_progress)
             self._event_player.finished.connect(self._on_finished)
             self._event_player.paused.connect(self._on_paused)
@@ -246,6 +282,22 @@ class PlayerTab(QWidget):
             self._update_scenario_visibility()
             inner_layout.addWidget(card)
 
+        card, lay = self._card("演奏模式")
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("正式演奏", "perform")
+        self.mode_combo.addItem("练习模式", "practice")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
+        lay.addWidget(self.mode_combo)
+        self.practice_strict_check = QCheckBox("严格校验鼠标修饰键")
+        self.practice_strict_check.setChecked(False)
+        self.practice_strict_check.setToolTip(
+            "关闭后只校验音键；练习模式始终不会调用自动演奏输入驱动"
+        )
+        self.practice_strict_check.setVisible(False)
+        self.practice_strict_check.toggled.connect(self._save_transport_preferences)
+        lay.addWidget(self.practice_strict_check)
+        inner_layout.addWidget(card)
+
         # 选择乐谱
         card, lay = self._card("选择乐谱")
         label = QLabel("乐谱")
@@ -276,6 +328,47 @@ class PlayerTab(QWidget):
         unit.setObjectName("HintText")
         bpm_row.addWidget(unit)
         lay.addLayout(bpm_row)
+
+        transport_row = QHBoxLayout()
+        transport_row.setSpacing(10)
+        transpose_label = QLabel("移调")
+        transpose_label.setObjectName("FieldLabel")
+        self.transpose_spin = QSpinBox()
+        self.transpose_spin.setObjectName("TransposeSpin")
+        self.transpose_spin.setRange(-24, 24)
+        self.transpose_spin.setSuffix(" 半音")
+        self.transpose_spin.setToolTip("仅事件档位支持半音移调；超出范围时按八度折回并报告")
+        segment_label = QLabel("播放片段")
+        segment_label.setObjectName("FieldLabel")
+        self.segment_start_spin = QSpinBox()
+        self.segment_start_spin.setObjectName("SegmentStartSpin")
+        self.segment_start_spin.setRange(1, 1)
+        self.segment_start_spin.setPrefix("第 ")
+        self.segment_start_spin.setSuffix(" 项")
+        separator = QLabel("至")
+        separator.setObjectName("HintText")
+        self.segment_end_spin = QSpinBox()
+        self.segment_end_spin.setObjectName("SegmentEndSpin")
+        self.segment_end_spin.setRange(1, 1)
+        self.segment_end_spin.setPrefix("第 ")
+        self.segment_end_spin.setSuffix(" 项")
+        self.bpm_spin.valueChanged.connect(self._on_transport_changed)
+        self.transpose_spin.valueChanged.connect(self._on_transport_changed)
+        self.segment_start_spin.valueChanged.connect(self._on_segment_changed)
+        self.segment_end_spin.valueChanged.connect(self._on_segment_changed)
+        segment_reset = QPushButton("全曲")
+        segment_reset.setObjectName("BtnSecondary")
+        segment_reset.clicked.connect(self._reset_segment)
+        transport_row.addWidget(transpose_label)
+        transport_row.addWidget(self.transpose_spin)
+        transport_row.addSpacing(12)
+        transport_row.addWidget(segment_label)
+        transport_row.addWidget(self.segment_start_spin)
+        transport_row.addWidget(separator)
+        transport_row.addWidget(self.segment_end_spin)
+        transport_row.addWidget(segment_reset)
+        transport_row.addStretch(1)
+        lay.addLayout(transport_row)
 
         info = QFrame()
         info.setStyleSheet(f"background: #1E1E28; border-radius: 8px;")
@@ -330,6 +423,13 @@ class PlayerTab(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         lay.addWidget(self.progress_bar)
+        self.seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.setObjectName("PlaybackSeekSlider")
+        self.seek_slider.setRange(0, 0)
+        self.seek_slider.setTracking(False)
+        self.seek_slider.setToolTip("暂停时拖动，下次从片段内所选乐谱项开始")
+        self.seek_slider.sliderReleased.connect(self._on_seek_released)
+        lay.addWidget(self.seek_slider)
         pos_row = QHBoxLayout()
         self.pos_label = QLabel("0 / 0")
         self.pos_label.setStyleSheet(
@@ -359,6 +459,21 @@ class PlayerTab(QWidget):
         self.preview_status.setWordWrap(True)
         lay.addWidget(self.preview_status)
         inner_layout.addWidget(card)
+
+        card, lay = self._card("双轨提示")
+        self.score_rail_label = QLabel("乐谱轨: 请选择乐谱")
+        self.score_rail_label.setObjectName("HintText")
+        self.score_rail_label.setWordWrap(True)
+        self.input_rail_label = QLabel("输入轨: 请选择乐谱")
+        self.input_rail_label.setObjectName("HintText")
+        self.input_rail_label.setWordWrap(True)
+        self.degradation_rail_label = QLabel("")
+        self.degradation_rail_label.setObjectName("HintText")
+        self.degradation_rail_label.setWordWrap(True)
+        lay.addWidget(self.score_rail_label)
+        lay.addWidget(self.input_rail_label)
+        lay.addWidget(self.degradation_rail_label)
+        inner_layout.addWidget(card)
         inner_layout.addStretch(1)
 
     def _info_item(self, layout, label_text, value_text):
@@ -375,6 +490,458 @@ class PlayerTab(QWidget):
         layout.addLayout(col)
         return value
 
+    def _profile_preference_id(self):
+        return str(getattr(self._profile, "id", "legacy") or "legacy")
+
+    def _segment_bounds(self):
+        if not hasattr(self, "segment_start_spin"):
+            return 0, 0
+        return self.segment_start_spin.value() - 1, self.segment_end_spin.value()
+
+    def _prepare_current_score(self, score=None):
+        score = score or (
+            self._db.get_score(self._score_id) if self._score_id is not None else None
+        )
+        if not score:
+            return None
+        start, end = self._segment_bounds()
+        transpose = self.transpose_spin.value() if self._use_event_path() else 0
+        return prepare_score(
+            score["notes"],
+            start_index=start,
+            end_index=end,
+            transpose=transpose,
+            fold_octaves=True,
+        )
+
+    def _load_transport_preferences(self, score):
+        total = len(score["notes"])
+        raw = {}
+        if hasattr(self._db, "get_score_preferences"):
+            raw = self._db.get_score_preferences(
+                self._score_id, self._profile_preference_id()
+            )
+        defaults = {
+            "bpm": score["bpm_default"],
+            "transpose": 0,
+            "segment": [0, total],
+        }
+        merged = dict(defaults)
+        merged.update(raw or {})
+        settings = normalize_transport_preferences(merged, total)
+
+        self._loading_preferences = True
+        widgets = (
+            self.bpm_spin,
+            self.bpm_slider,
+            self.transpose_spin,
+            self.segment_start_spin,
+            self.segment_end_spin,
+            self.mode_combo,
+            self.practice_strict_check,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            self.segment_start_spin.setRange(1, max(1, total))
+            self.segment_end_spin.setRange(1, max(1, total))
+            self.bpm_spin.setValue(settings["bpm"])
+            self.bpm_slider.setValue(settings["bpm"])
+            self.transpose_spin.setValue(
+                settings["transpose"] if self._use_event_path() else 0
+            )
+            self.segment_start_spin.setValue(settings["segment"][0] + 1)
+            self.segment_end_spin.setValue(max(1, settings["segment"][1]))
+            mode = raw.get("mode") if isinstance(raw, dict) else None
+            if mode in ("perform", "practice"):
+                index = self.mode_combo.findData(mode)
+                if index >= 0:
+                    self.mode_combo.setCurrentIndex(index)
+            self.practice_strict_check.setChecked(
+                bool((raw or {}).get("practice_strict", False))
+            )
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+            self._loading_preferences = False
+        self._update_transport_capabilities()
+        self._refresh_transport_view(reset_progress=True)
+
+    def _save_transport_preferences(self, *_args):
+        if self._loading_preferences or self._score_id is None:
+            return
+        if not hasattr(self._db, "save_score_preferences"):
+            return
+        start, end = self._segment_bounds()
+        settings = {
+            "version": 1,
+            "bpm": self.bpm_spin.value(),
+            "transpose": self.transpose_spin.value() if self._use_event_path() else 0,
+            "segment": [start, end],
+            "mode": self._current_mode(),
+            "practice_strict": self.practice_strict_check.isChecked(),
+        }
+        self._db.save_score_preferences(
+            self._score_id, self._profile_preference_id(), settings
+        )
+
+    def _update_transport_capabilities(self):
+        event_path = self._use_event_path()
+        self.transpose_spin.setEnabled(event_path and not self._real_playback_active())
+        if not event_path and self.transpose_spin.value() != 0:
+            self.transpose_spin.blockSignals(True)
+            self.transpose_spin.setValue(0)
+            self.transpose_spin.blockSignals(False)
+        self.practice_strict_check.setVisible(
+            self._practice_mode() and self._use_event_path()
+        )
+
+    def _set_transport_enabled(self, enabled):
+        self.bpm_spin.setEnabled(enabled)
+        self.bpm_slider.setEnabled(enabled)
+        self.segment_start_spin.setEnabled(enabled)
+        self.segment_end_spin.setEnabled(enabled)
+        self.transpose_spin.setEnabled(enabled and self._use_event_path())
+
+    def _refresh_transport_view(self, *, reset_progress):
+        if self._score_id is None:
+            return
+        score = self._db.get_score(self._score_id)
+        if not score:
+            return
+        try:
+            prepared = self._prepare_current_score(score)
+        except ValueError as exc:
+            self.progress_state.setText(f"播放参数无效: {exc}")
+            return
+        self._active_notes = list(prepared.notes)
+        self._active_source_start = prepared.source_start
+        self._transport_degradation_count = len(prepared.degradations)
+        self._transport_degradations = list(prepared.degradations)
+        self.info_count.setText(
+            str(len(prepared.notes))
+            if len(prepared.notes) == len(score["notes"])
+            else f"{len(prepared.notes)} / {len(score['notes'])}"
+        )
+        self.info_duration.setText(
+            f"{self._estimate_seconds(prepared.notes, self.bpm_spin.value())} 秒"
+        )
+        self.seek_slider.setRange(0, len(prepared.notes))
+        if reset_progress:
+            self._paused_done = 0
+            self._paused_total = len(prepared.notes)
+            self.seek_slider.setValue(0)
+            self.progress_bar.setRange(0, max(1, len(prepared.notes)))
+            self.progress_bar.setValue(0)
+            self.pos_label.setText(f"0 / {len(prepared.notes)}")
+            self.reset_btn.setEnabled(False)
+        self._set_dual_hint(self._paused_done)
+
+    def _on_segment_changed(self, _value=None):
+        if self._loading_preferences:
+            return
+        sender = self.sender()
+        start = self.segment_start_spin.value()
+        end = self.segment_end_spin.value()
+        if start > end:
+            if sender is self.segment_start_spin:
+                self.segment_end_spin.setValue(start)
+            else:
+                self.segment_start_spin.setValue(end)
+        self._clear_pause()
+        self._refresh_transport_view(reset_progress=True)
+        self._save_transport_preferences()
+
+    def _on_transport_changed(self, _value=None):
+        if self._loading_preferences or self._score_id is None:
+            return
+        self._clear_pause()
+        self._refresh_transport_view(reset_progress=True)
+        self._save_transport_preferences()
+
+    def _reset_segment(self):
+        if self._score_id is None:
+            return
+        score = self._db.get_score(self._score_id)
+        if not score:
+            return
+        total = max(1, len(score["notes"]))
+        self._loading_preferences = True
+        try:
+            self.segment_start_spin.setValue(1)
+            self.segment_end_spin.setValue(total)
+        finally:
+            self._loading_preferences = False
+        self._clear_pause()
+        self._refresh_transport_view(reset_progress=True)
+        self._save_transport_preferences()
+
+    def _on_seek_released(self):
+        if self._real_playback_active():
+            self.seek_slider.setValue(self._paused_done)
+            return
+        done = self.seek_slider.value()
+        total = len(self._active_notes)
+        self._paused_done = max(0, min(done, total))
+        self._paused_total = total
+        self.progress_bar.setRange(0, max(1, total))
+        self.progress_bar.setValue(self._paused_done)
+        self.pos_label.setText(f"{self._paused_done} / {total}")
+        self.play_btn.setText(
+            ("继续练习" if self._practice_mode() else "继续演奏")
+            if self._paused_done > 0
+            else ("开始练习" if self._practice_mode() else "开始演奏")
+        )
+        self.reset_btn.setEnabled(self._paused_done > 0)
+        self.progress_state.setText(f"已定位到 {self._paused_done} / {total}")
+        self._set_dual_hint(self._paused_done)
+
+    def _current_mode(self):
+        if not hasattr(self, "mode_combo"):
+            return "perform"
+        return self.mode_combo.currentData() or "perform"
+
+    def _practice_mode(self):
+        return self._current_mode() == "practice"
+
+    def _on_mode_change(self):
+        self._stop_preview()
+        self._clear_pause()
+        self._update_transport_capabilities()
+        self._save_transport_preferences()
+        self._set_dual_hint(0)
+
+    def _set_dual_hint(self, index):
+        if not hasattr(self, "score_rail_label"):
+            return
+        if self._score_id is None:
+            self.score_rail_label.setText("乐谱轨: 请选择乐谱")
+            self.input_rail_label.setText("输入轨: 请选择乐谱")
+            self.degradation_rail_label.setText("")
+            return
+        score = self._db.get_score(self._score_id)
+        if not score:
+            self.score_rail_label.setText("乐谱轨: 请选择乐谱")
+            self.input_rail_label.setText("输入轨: 请选择乐谱")
+            self.degradation_rail_label.setText("")
+            return
+        notes = self._active_notes or list(score["notes"])
+        try:
+            hint = build_dual_rail_hint(
+                notes,
+                0 if index is None else index,
+                keymap=self._player.keymap,
+                profile=self._profile,
+                use_event_path=self._use_event_path(),
+                bpm=self.bpm_spin.value(),
+                settle_ms=self._settle_ms,
+                release_settle_ms=self._release_settle_ms,
+                hold_ratio=self._hold_ratio,
+                gap_ms=self._gap_ms,
+            )
+        except Exception as e:
+            self.score_rail_label.setText("乐谱轨: 无法生成提示")
+            self.input_rail_label.setText(f"输入轨: {e}")
+            self.degradation_rail_label.setText("")
+            return
+        self.score_rail_label.setText(hint.score_text)
+        self.input_rail_label.setText(hint.input_text)
+        details = []
+        if self._transport_degradation_count:
+            details.append(f"播放控制转换 {self._transport_degradation_count} 处")
+        if hint.degradation_text:
+            details.append(hint.degradation_text)
+        self.degradation_rail_label.setText(
+            f"降级: {'; '.join(details)}" if details else ""
+        )
+
+    @staticmethod
+    def _practice_key_name(key):
+        char = getattr(key, "char", None)
+        if char:
+            return char.upper() if len(char) == 1 else str(char).lower()
+        name = getattr(key, "name", None)
+        if name in {
+            "shift", "shift_l", "shift_r", "ctrl", "ctrl_l", "ctrl_r",
+            "alt", "alt_l", "alt_r", "cmd", "cmd_l", "cmd_r",
+        }:
+            return None
+        return str(name).lower() if name else None
+
+    def _start_practice_listeners(self):
+        self._stop_practice_listeners()
+        if not self._practice_input_enabled:
+            return False
+        try:
+            from pynput import keyboard as pk
+            from pynput import mouse as pm
+
+            def on_press(key):
+                token = self._practice_key_name(key)
+                if token == "esc":
+                    self.practice_stop_requested.emit()
+                    return False
+                if not token:
+                    return
+                with self._practice_lock:
+                    if token in self._practice_keys:
+                        return
+                    self._practice_keys.add(token)
+                    keyboard = tuple(self._practice_keys)
+                    mouse = tuple(self._practice_mouse)
+                self.practice_input.emit(keyboard, mouse)
+
+            def on_release(key):
+                token = self._practice_key_name(key)
+                if token:
+                    with self._practice_lock:
+                        self._practice_keys.discard(token)
+
+            def on_click(_x, _y, button, pressed):
+                token = str(getattr(button, "name", button)).lower()
+                with self._practice_lock:
+                    if pressed:
+                        self._practice_mouse.add(token)
+                    else:
+                        self._practice_mouse.discard(token)
+
+            self._practice_keyboard_listener = pk.Listener(
+                on_press=on_press, on_release=on_release
+            )
+            self._practice_mouse_listener = pm.Listener(on_click=on_click)
+            self._practice_keyboard_listener.start()
+            self._practice_mouse_listener.start()
+            return True
+        except Exception as exc:
+            self._stop_practice_listeners()
+            self.progress_state.setText(f"练习监听启动失败: {exc}")
+            return False
+
+    def _stop_practice_listeners(self):
+        for attr in ("_practice_keyboard_listener", "_practice_mouse_listener"):
+            listener = getattr(self, attr, None)
+            if listener is not None:
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
+        with self._practice_lock:
+            self._practice_keys.clear()
+            self._practice_mouse.clear()
+
+    def _start_practice(self, score, start_index):
+        notes = list(score["notes"])
+        cues = build_practice_cues(
+            notes,
+            keymap=self._player.keymap,
+            profile=self._profile,
+            use_event_path=self._use_event_path(),
+            bpm=self.bpm_spin.value(),
+            settle_ms=self._settle_ms,
+            release_settle_ms=self._release_settle_ms,
+            hold_ratio=self._hold_ratio,
+            gap_ms=self._gap_ms,
+        )
+        self._practice_notes = notes
+        self._practice_bpm = self.bpm_spin.value()
+        self._practice_session = PracticeSession(cues, start_index)
+        self._practice_index = self._practice_session.index
+        if self._practice_session.completed:
+            self._finish_practice()
+            return
+        self._practice_active = True
+        self._had_error = False
+        self.mode_combo.setEnabled(False)
+        self.play_btn.setEnabled(False)
+        self.play_btn.setText("练习中")
+        self.preview_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.reset_btn.setEnabled(False)
+        self._set_transport_enabled(False)
+        self.state_label.setText(f"练习中 BPM {self._practice_bpm}")
+        listening = self._start_practice_listeners()
+        if listening:
+            self.progress_state.setText("请按输入轨提示操作；按对后才会进入下一项")
+        elif not self._practice_input_enabled:
+            self.progress_state.setText("练习输入监听已禁用；不会发送任何键鼠输入")
+        self._on_progress(self._practice_index, len(self._practice_notes))
+
+    def _on_practice_input(self, keyboard, mouse):
+        session = self._practice_session
+        if not self._practice_active or session is None:
+            return
+        result = session.submit(
+            keyboard,
+            mouse,
+            strict_modifiers=self.practice_strict_check.isChecked(),
+        )
+        self._practice_index = result.index
+        self._paused_done = result.index
+        if result.correct:
+            self._on_progress(result.index, result.total)
+            if result.completed:
+                self._finish_practice()
+                return
+            self.progress_state.setText(
+                f"命中 {result.hits} · 错误 {result.misses} · 继续按当前提示"
+            )
+        else:
+            self.progress_state.setText(
+                f"未命中 · 正确 {result.hits} · 错误 {result.misses} · 仍停留在当前项"
+            )
+
+    def _practice_tick(self):
+        """Compatibility test hook: submit exactly the currently expected input.
+
+        No timer calls this method in normal operation; real practice advances
+        only through the read-only global input listener above.
+        """
+        session = self._practice_session
+        cue = session.current if session is not None else None
+        if self._practice_active and cue is not None:
+            self._on_practice_input(tuple(cue.keyboard), tuple(cue.mouse))
+
+    def _pause_practice(self):
+        if not self._practice_active:
+            return
+        self._practice_timer.stop()
+        self._stop_practice_listeners()
+        self._practice_active = False
+        self._paused_done = self._practice_index
+        self._paused_total = len(self._practice_notes)
+        self.mode_combo.setEnabled(True)
+        self.play_btn.setEnabled(True)
+        self.play_btn.setText("继续练习" if self._paused_done > 0 else "开始练习")
+        self.stop_btn.setEnabled(False)
+        self.reset_btn.setEnabled(True)
+        self._set_transport_enabled(True)
+        self.state_label.setText("练习已暂停")
+        self.progress_state.setText(
+            f"练习暂停于 {self._paused_done} / {self._paused_total}"
+        )
+        self._update_preview_button()
+
+    def _finish_practice(self):
+        self._practice_timer.stop()
+        self._stop_practice_listeners()
+        total = len(self._practice_notes)
+        hits = self._practice_session.hits if self._practice_session is not None else 0
+        misses = self._practice_session.misses if self._practice_session is not None else 0
+        self._practice_active = False
+        self._paused_done = 0
+        self._paused_total = 0
+        self.mode_combo.setEnabled(True)
+        self.play_btn.setEnabled(True)
+        self.play_btn.setText("开始练习" if self._practice_mode() else "开始演奏")
+        self.stop_btn.setEnabled(False)
+        self.reset_btn.setEnabled(False)
+        self._set_transport_enabled(True)
+        self.state_label.setText("就绪")
+        self.progress_state.setText(f"练习完成 · 命中 {hits} · 错误 {misses}")
+        self._on_progress(total, total)
+        self._update_preview_button()
+
     def refresh(self):
         self._clear_pause()
         self.combo.blockSignals(True)
@@ -387,11 +954,13 @@ class PlayerTab(QWidget):
             self.combo.setCurrentIndex(0)
         else:
             self._score_id = None
+            self._active_notes = []
             self.info_name.setText("-")
             self.info_count.setText("-")
             self.info_duration.setText("-")
             self.play_btn.setEnabled(False)
             self._update_preview_button()
+            self._set_dual_hint(None)
 
     def select_score(self, score_id: int):
         for i in range(self.combo.count()):
@@ -410,21 +979,18 @@ class PlayerTab(QWidget):
         score = self._db.get_score(self._score_id)
         if score is None:
             return
-        self.bpm_spin.setValue(score["bpm_default"])
         self.info_name.setText(score["name"])
-        self.info_count.setText(str(len(score["notes"])))
-        self.info_duration.setText(
-            f"{self._estimate_seconds(score['notes'], self.bpm_spin.value())} 秒"
-        )
+        self._load_transport_preferences(score)
         self.play_btn.setEnabled(not self._player.is_playing)
         self._update_preview_button()
+        self._set_dual_hint(self._paused_done)
 
     def _clear_pause(self):
         """回到未开始态:清空暂停进度与按钮状态。"""
         self._paused_done = 0
         self._paused_total = 0
         self._event_degradation_count = 0
-        self.play_btn.setText("开始演奏")
+        self.play_btn.setText("开始练习" if self._practice_mode() else "开始演奏")
         self.reset_btn.setEnabled(False)
 
     def _estimate_seconds(self, notes, bpm):
@@ -434,7 +1000,7 @@ class PlayerTab(QWidget):
         return round(total_ms / 1000.0, 1)
 
     def _real_playback_active(self):
-        return self._player.is_playing or (
+        return self._practice_active or self._player.is_playing or (
             self._event_player is not None and self._event_player.is_playing
         )
 
@@ -459,6 +1025,14 @@ class PlayerTab(QWidget):
         if not score or not score["notes"]:
             AppDialog.show_warning(self, "提示", "该乐谱没有音符数据")
             return
+        try:
+            prepared = self._prepare_current_score(score)
+        except ValueError as exc:
+            AppDialog.show_error(self, "试听失败", str(exc))
+            return
+        if prepared is None or not prepared.notes:
+            AppDialog.show_warning(self, "提示", "当前播放片段为空")
+            return
         self._preview_error = False
         self._preview_active = True
         self.preview_btn.setText("停止试听")
@@ -466,7 +1040,7 @@ class PlayerTab(QWidget):
         self.preview_status.setText("大钢琴音色试听中…不会向游戏发送按键")
         try:
             started = self._preview_player.play(
-                score["notes"],
+                prepared.notes,
                 bpm=self.bpm_spin.value(),
                 score_name=score["name"],
             )
@@ -522,9 +1096,32 @@ class PlayerTab(QWidget):
         if not score or not score["notes"]:
             AppDialog.show_warning(self, "提示", "该乐谱没有音符数据")
             return
+        try:
+            prepared = self._prepare_current_score(score)
+        except ValueError as exc:
+            AppDialog.show_error(self, "播放参数无效", str(exc))
+            return
+        if prepared is None or not prepared.notes:
+            AppDialog.show_warning(self, "提示", "当前播放片段为空")
+            return
+        self._active_notes = list(prepared.notes)
+        self._active_source_start = prepared.source_start
+        self._transport_degradations = list(prepared.degradations)
+        self._transport_degradation_count = len(prepared.degradations)
+        if not self._use_event_path():
+            legacy_semitones = sum(
+                1 for item in prepared.notes if int(item.get("semitone", 0) or 0)
+            )
+            if legacy_semitones:
+                self._transport_degradation_count += legacy_semitones
         start_index = self._paused_done if self._paused_done > 0 else 0
+        if self._practice_mode():
+            self._start_practice(
+                {"notes": prepared.notes, "name": score["name"]}, start_index
+            )
+            return
         self._pending = (
-            score["notes"],
+            prepared.notes,
             self.bpm_spin.value(),
             start_index,
             score["name"],
@@ -533,8 +1130,10 @@ class PlayerTab(QWidget):
         self._countdown_left = 3
         self.play_btn.setEnabled(False)
         self.preview_btn.setEnabled(False)
+        self.mode_combo.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.reset_btn.setEnabled(False)
+        self._set_transport_enabled(False)
         resume_hint = f"从第 {start_index + 1} 项继续" if start_index > 0 else ""
         self.state_label.setText(
             f"3 秒后演奏: 《{score['name']}》 {resume_hint}".strip()
@@ -552,7 +1151,10 @@ class PlayerTab(QWidget):
                 score_name=score["name"],
                 bpm=self.bpm_spin.value(),
                 start_index=start_index,
-                total_notes=len(score["notes"]),
+                total_notes=len(prepared.notes),
+                source_start=prepared.source_start,
+                source_end=prepared.source_end,
+                transport_degradation_count=self._transport_degradation_count,
             )
         except Exception:
             pass
@@ -603,11 +1205,18 @@ class PlayerTab(QWidget):
             except Exception as e:
                 self.progress_state.setText(f"档位已切换(写回配置失败: {e})")
         self._update_scenario_visibility()
+        score = self._db.get_score(self._score_id) if self._score_id is not None else None
+        if score:
+            self._load_transport_preferences(score)
+        else:
+            self._update_transport_capabilities()
+        self._set_dual_hint(self._paused_done)
 
     def _play_event(self, notes, bpm, start_index, score_name):
         if start_index >= len(notes):
             self._clear_pause()
             self.play_btn.setEnabled(True)
+            self.mode_combo.setEnabled(True)
             self.stop_btn.setEnabled(False)
             self.state_label.setText("就绪")
             self.progress_state.setText("演奏完成")
@@ -639,10 +1248,12 @@ class PlayerTab(QWidget):
                 "profile_id": self._profile.id,
                 "profile_name": self._profile.name,
                 "scenario_id": scenario_id,
-                "degradation_count": len(degradations),
+                "degradation_count": (
+                    len(degradations) + self._transport_degradation_count
+                ),
             },
         )
-        n = len(degradations)
+        n = len(degradations) + self._transport_degradation_count
         suffix = f" · 已降级 {n} 处" if n else ""
         self.state_label.setText(f"演奏中 BPM {bpm} · {self._profile.name}")
         self.progress_state.setText(f"演奏中...{suffix}")
@@ -654,6 +1265,8 @@ class PlayerTab(QWidget):
         self._paused_total = 0
         self._event_degradation_count = 0
         self.play_btn.setEnabled(True)
+        self.mode_combo.setEnabled(True)
+        self._set_transport_enabled(True)
         self._update_preview_button()
         QTimer.singleShot(0, self._update_preview_button)
         self.play_btn.setText("开始演奏")
@@ -663,6 +1276,7 @@ class PlayerTab(QWidget):
         self.progress_state.setText(reason or "演奏已中止")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.seek_slider.setValue(0)
         self.pos_label.setText("0 / 0")
 
     def _countdown_tick(self):
@@ -674,6 +1288,13 @@ class PlayerTab(QWidget):
             return
         self._countdown_timer.stop()
         notes, bpm, start_index, score_name = self._pending
+        if not self._preflight_target():
+            self.play_btn.setEnabled(True)
+            self.mode_combo.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self._set_transport_enabled(True)
+            self._update_preview_button()
+            return
         self._start_focus_watch()
 
         # 记录控制事件:倒计时结束,实际开始演奏
@@ -701,7 +1322,12 @@ class PlayerTab(QWidget):
                 score_name=score_name,
             )
             self.state_label.setText(f"演奏中 BPM {bpm}")
-            self.progress_state.setText("演奏中...")
+            suffix = (
+                f" · 已降级 {self._transport_degradation_count} 处"
+                if self._transport_degradation_count
+                else ""
+            )
+            self.progress_state.setText(f"演奏中...{suffix}")
 
     def _stop_all(self):
         """统一停止:同时停止 Player 和 EventPlayer(若存在)。
@@ -718,7 +1344,10 @@ class PlayerTab(QWidget):
         if timer is not None and timer.isActive():
             timer.stop()
             self.play_btn.setEnabled(True)
+            self.mode_combo.setEnabled(True)
             self.stop_btn.setEnabled(False)
+            self._set_transport_enabled(True)
+            self._update_preview_button()
             self.progress_state.setText("已取消")
 
             # 记录控制事件
@@ -727,6 +1356,10 @@ class PlayerTab(QWidget):
                 logger.log_control(action="cancel_countdown")
             except Exception:
                 pass
+            return
+
+        if self._practice_active:
+            self._pause_practice()
             return
 
         # 记录控制事件
@@ -749,6 +1382,85 @@ class PlayerTab(QWidget):
         except Exception:
             return None
 
+    def _preflight_target(self):
+        """Lock and inspect the actual foreground target before any key-down."""
+
+        self._guard_target = None
+        self._target_elevation = None
+        if not self._focus_enabled or not self._watcher.is_available():
+            return True
+        try:
+            current = self._watcher.capture_current()
+        except Exception:
+            current = None
+        if current is None:
+            AppDialog.show_error(
+                self,
+                "无法确认目标窗口",
+                "未能读取当前前台窗口。为避免把按键发送到错误程序，本次演奏未启动。",
+            )
+            self.progress_state.setText("未启动：无法确认目标窗口")
+            return False
+        title = current.get("title") or ""
+        if current.get("hwnd") == self._own_hwnd():
+            AppDialog.show_warning(
+                self,
+                "请切换到游戏窗口",
+                "倒计时结束时仍是本程序在前台。为避免误输入，本次演奏未启动。",
+            )
+            self.progress_state.setText("未启动：倒计时内未切换到游戏窗口")
+            return False
+        if self._target_title and self._target_title.lower() not in title.lower():
+            AppDialog.show_warning(
+                self,
+                "目标窗口不匹配",
+                f"当前前台窗口《{title or '未命名窗口'}》不匹配配置的目标标题。",
+            )
+            self.progress_state.setText("未启动：目标窗口不匹配")
+            return False
+        assessment = inspect_target_elevation(current.get("hwnd"))
+        self._target_elevation = assessment
+        if assessment.blocked:
+            AppDialog.show_error(self, "Windows 权限不兼容", assessment.message)
+            self.progress_state.setText("未启动：目标窗口权限高于本程序")
+            return False
+
+        self._guard_target = dict(current)
+        self._policy = FocusLockPolicy(
+            own_hwnd=self._own_hwnd(), title_override=self._target_title
+        )
+        self._policy.target = dict(current)
+        self._policy.locked = True
+        if assessment.status == "unknown":
+            self.progress_state.setToolTip(assessment.message)
+        return True
+
+    def _dispatch_allowed(self):
+        """Worker-thread guard. Key-up/panic paths never call this callback."""
+
+        if not self._focus_enabled or not self._watcher.is_available():
+            return True
+        target = self._guard_target
+        if target is None:
+            return False, "尚未锁定目标窗口，拒绝发送输入"
+        try:
+            current = self._watcher.capture_current()
+        except Exception:
+            current = None
+        if current is None:
+            return False, "无法确认当前前台窗口，拒绝发送输入"
+        if self._target_title:
+            allowed = self._target_title.lower() in (current.get("title") or "").lower()
+        else:
+            allowed = current.get("hwnd") == target.get("hwnd")
+            if not allowed and (target.get("title") or ""):
+                allowed = current.get("title") == target.get("title")
+        return (
+            (True, "")
+            if allowed
+            else (False, "目标窗口已失去前台焦点，输入已安全中止")
+        )
+
     def _start_focus_watch(self):
         """启动焦点轮询;自动模式下不预设目标,用户切到的首个外部窗口被锁定为目标。
 
@@ -756,17 +1468,15 @@ class PlayerTab(QWidget):
         """
         self._focus_timer.stop()
         self._focus_lost = False
-        if (
-            self._mini_mode
-            or not self._focus_enabled
-            or not self._watcher.is_available()
-        ):
+        if not self._focus_enabled or not self._watcher.is_available():
             self._policy = None
             return
-        self._policy = FocusLockPolicy(
-            own_hwnd=self._own_hwnd(), title_override=self._target_title
-        )
-        self._focus_timer.start()
+        if self._policy is None:
+            self._policy = FocusLockPolicy(
+                own_hwnd=self._own_hwnd(), title_override=self._target_title
+            )
+        if not self._mini_mode:
+            self._focus_timer.start()
 
     def _check_focus(self):
         if not self._player.is_playing and (
@@ -863,7 +1573,6 @@ class PlayerTab(QWidget):
         """
         self._mini_mode = True
         self._focus_timer.stop()
-        self._policy = None
 
     def rearm_focus_watch(self):
         """从小窗还原到主窗时恢复焦点检测(仅演奏中生效)。"""
@@ -890,7 +1599,10 @@ class PlayerTab(QWidget):
     def _on_progress(self, done, total):
         self.progress_bar.setRange(0, max(1, total))
         self.progress_bar.setValue(done)
+        self.seek_slider.setRange(0, max(0, total))
+        self.seek_slider.setValue(done)
         self.pos_label.setText(f"{done} / {total}")
+        self._set_dual_hint(done)
 
     def _on_paused(self, done, total):
         """停止(暂停):进度保留,可继续或重置。"""
@@ -898,6 +1610,8 @@ class PlayerTab(QWidget):
         self._paused_done = done
         self._paused_total = total
         self.play_btn.setEnabled(True)
+        self.mode_combo.setEnabled(True)
+        self._set_transport_enabled(True)
         self.play_btn.setText("继续演奏" if done > 0 else "开始演奏")
         self.stop_btn.setEnabled(False)
         self.reset_btn.setEnabled(True)
@@ -913,6 +1627,11 @@ class PlayerTab(QWidget):
 
     def _reset(self):
         """重置:清空暂停进度,回到未开始态(仅在暂停态可点击)。"""
+        if self._practice_active:
+            self._practice_timer.stop()
+            self._practice_active = False
+        self._stop_practice_listeners()
+
         # 记录控制事件
         try:
             logger = get_event_logger()
@@ -923,9 +1642,24 @@ class PlayerTab(QWidget):
         self._clear_pause()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.seek_slider.setValue(0)
         self.pos_label.setText("0 / 0")
         self.state_label.setText("就绪")
         self.progress_state.setText("进度已重置")
+        self.mode_combo.setEnabled(True)
+        self._set_transport_enabled(True)
+        self._set_dual_hint(0)
+        self._update_preview_button()
+
+    def shutdown(self):
+        """Stop UI-owned listeners/timers before the playback engines exit."""
+
+        self._stop_practice_listeners()
+        self._practice_timer.stop()
+        self._focus_timer.stop()
+        timer = getattr(self, "_countdown_timer", None)
+        if timer is not None:
+            timer.stop()
 
     def _on_error(self, msg: str):
         self._had_error = True
@@ -937,7 +1671,9 @@ class PlayerTab(QWidget):
         event_degradation_count = self._event_degradation_count
         self._clear_pause()
         self.play_btn.setEnabled(True)
+        self.mode_combo.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self._set_transport_enabled(True)
         self._update_preview_button()
         is_event_path = self._use_event_path() and self._event_player is not None
         event_log_path = ""
@@ -947,7 +1683,10 @@ class PlayerTab(QWidget):
             event_log_error = self._event_player.last_log_error
         summary = None if is_event_path else getattr(self._player, "last_summary", None)
         if summary is not None:
-            self.progress_state.setText(summary.format())
+            text = summary.format()
+            if self._transport_degradation_count:
+                text += f" · 已降级 {self._transport_degradation_count} 处"
+            self.progress_state.setText(text)
             if summary.log_path:
                 self.progress_state.setToolTip(f"演奏日志: {summary.log_path}")
         elif event_log_path:
@@ -959,9 +1698,12 @@ class PlayerTab(QWidget):
             if event_log_error:
                 self.progress_state.setText(f"演奏完成 · 日志写入失败: {event_log_error}")
             elif summary is None:
+                total_degradations = (
+                    event_degradation_count + self._transport_degradation_count
+                )
                 suffix = (
-                    f" · 已降级 {event_degradation_count} 处"
-                    if event_degradation_count
+                    f" · 已降级 {total_degradations} 处"
+                    if total_degradations
                     else ""
                 )
                 self.progress_state.setText(f"演奏完成{suffix}")

@@ -19,11 +19,15 @@ class TestSpecPackaging(unittest.TestCase):
             self.spec_text = f.read()
 
     def test_hiddenimports_declares_pynput(self):
-        self.assertIn('hiddenimports=["pynput"]', self.spec_text)
+        self.assertIn('"pynput"', self.spec_text)
+
+    def test_hiddenimports_declares_mido(self):
+        self.assertIn('"mido"', self.spec_text)
 
     def test_datas_bundles_profiles_and_config(self):
         self.assertIn('("profiles", "profiles")', self.spec_text)
         self.assertIn('("config.yaml", ".")', self.spec_text)
+        self.assertIn('("THIRD_PARTY_NOTICES.md", ".")', self.spec_text)
 
 
 if __name__ == "__main__":

@@ -33,16 +33,12 @@ EXCLUDES = [
 
 def _keep(entry_name: str) -> bool:
     n = entry_name.replace("\\", "/").lower()
-    base = n.rsplit("/", 1)[-1]
-    # Qt 6.11 链接 Windows 系统 ICU。构建机 PATH 中若存在 Poppler/Conda 的
-    # 同名 ICU，PyInstaller 会误收集并遮蔽 System32，导致 QtCore 找不到导出过程。
-    if fnmatch.fnmatch(base, "icu*.dll"):
-        return False
     # Qt 插件:仅保留窗口平台与窗口样式
     if "/qt6/plugins/" in n:
         return "/platforms/" in n or "/styles/" in n
     # Qt DLL 目录:保留 Core/Gui/Widgets + 所有运行时依赖(修复 QtCore 加载失败)
     if "/qt6/bin/" in n and n.endswith(".dll"):
+        base = n.rsplit("/", 1)[-1]
         # 保留 Qt6 核心模块
         if base.startswith(("qt6core", "qt6gui", "qt6widgets")):
             return True
@@ -64,8 +60,13 @@ a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
-    datas=[("config.yaml", "."), ("app.ico", "."), ("profiles", "profiles")],
-    hiddenimports=["pynput"],
+    datas=[
+        ("config.yaml", "."),
+        ("app.ico", "."),
+        ("profiles", "profiles"),
+        ("THIRD_PARTY_NOTICES.md", "."),
+    ],
+    hiddenimports=["pynput", "mido"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

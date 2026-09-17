@@ -127,6 +127,21 @@ class TestReleaseGuarantee(unittest.TestCase):
         player.shutdown()
         self.assertEqual(driver.events, [])
 
+    def test_dispatch_guard_blocks_press_and_still_releases(self):
+        player, driver = make_player()
+        errors = []
+        player.error_occurred.connect(
+            errors.append, type=Qt.ConnectionType.DirectConnection
+        )
+        player.set_dispatch_guard(lambda: (False, "目标窗口已失焦"))
+        player.play([{"notes": ["mid_1"], "dur": 0.1}], bpm=120, gap_ms=0)
+        deadline = time.time() + 5
+        while player.is_playing and time.time() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(any(kind == "press_chord" for kind, _ in driver.events))
+        self.assertEqual(errors, ["目标窗口已失焦"])
+        self.assertTrue(set(_ALL_KEYS) <= self._released_keys(driver))
+
 
 class TestPauseResumeSemantics(unittest.TestCase):
     def test_pause_mid_note_keeps_index_for_replay(self):

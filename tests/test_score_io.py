@@ -17,7 +17,9 @@ from core.score_io import (
     export_midi,
     import_any,
     import_json,
+    import_json_many,
     import_midi,
+    inspect_midi,
     midi_to_note_id,
     note_id_to_midi,
 )
@@ -143,8 +145,8 @@ class TestMidiRoundtrip(unittest.TestCase):
         self.assertEqual(result.notes[0]["notes"], ["mid_1", "mid_3", "mid_5"])
         self.assertAlmostEqual(result.notes[0]["dur"], 1.0, places=6)
 
-    def test_rest_absorbed_into_slot(self):
-        """休止在 MIDI 中表现为间隙,导入后并入前一音符的时值槽;总拍数不变。"""
+    def test_rest_is_preserved_as_explicit_timeline_element(self):
+        """绝对时间适配保留真正休止，后续编辑/跳转不再猜测间隙。"""
         score = {"name": "r", "bpm_default": 100,
                  "notes": [
                      {"notes": ["mid_1"], "dur": 1.0},
@@ -152,8 +154,30 @@ class TestMidiRoundtrip(unittest.TestCase):
                      {"notes": ["mid_3"], "dur": 1.0},
                  ]}
         result = self._roundtrip(score)
-        self.assertEqual([e["notes"] for e in result.notes], [["mid_1"], ["mid_3"]])
+        self.assertEqual([e["notes"] for e in result.notes], [["mid_1"], [], ["mid_3"]])
         self.assertEqual(sum(e["dur"] for e in result.notes), 3.0)
+
+    def test_trailing_rest_survives_midi_roundtrip(self):
+        score = {
+            "name": "尾部休止",
+            "bpm_default": 120,
+            "notes": [
+                {"notes": ["mid_1"], "dur": 1.0},
+                {"notes": [], "dur": 2.0},
+            ],
+        }
+        result = self._roundtrip(score)
+        self.assertEqual([item["notes"] for item in result.notes], [["mid_1"], []])
+        self.assertAlmostEqual(sum(item["dur"] for item in result.notes), 3.0)
+
+    def test_semitone_roundtrip(self):
+        score = {
+            "name": "半音",
+            "bpm_default": 120,
+            "notes": [{"notes": ["mid_1"], "dur": 1.0, "semitone": 1}],
+        }
+        result = self._roundtrip(score)
+        self.assertEqual(result.notes, score["notes"])
 
     def test_dotted_and_sixteenth(self):
         score = {"name": "d", "bpm_default": 100,
@@ -201,7 +225,7 @@ class TestMidiImportEdges(unittest.TestCase):
         self.assertEqual(len(result.notes), 2)
         self.assertEqual([e["notes"][0] for e in result.notes], ["mid_1", "mid_1"])
 
-    def test_black_key_becomes_rest(self):
+    def test_black_key_becomes_semitone(self):
         track = (
             _vlq(0) + bytes((0x90, 61, 100))     # C#4 黑键
             + _vlq(TPQ) + bytes((0x80, 61, 0))
@@ -209,18 +233,22 @@ class TestMidiImportEdges(unittest.TestCase):
         )
         result = import_midi(self._write(self._midi(track=track)))
         self.assertEqual(len(result.notes), 1)
-        self.assertEqual(result.notes[0]["notes"], [])
-        self.assertTrue(any("黑键" in w for w in result.warnings))
+        self.assertEqual(
+            result.notes[0], {"notes": ["mid_1"], "dur": 1.0, "semitone": 1}
+        )
 
-    def test_out_of_range_becomes_rest(self):
+    def test_out_of_range_folds_by_octave_with_report(self):
         track = (
             _vlq(0) + bytes((0x90, 100, 100))    # 超出 C3~B5
             + _vlq(TPQ) + bytes((0x80, 100, 0))
             + _vlq(0) + b"\xff\x2f\x00"
         )
         result = import_midi(self._write(self._midi(track=track)))
-        self.assertEqual(result.notes[0]["notes"], [])
-        self.assertTrue(any("范围外" in w for w in result.warnings))
+        self.assertEqual(result.notes[0]["notes"], ["high_3"])
+        self.assertTrue(any("八度折回" in w for w in result.warnings))
+        no_fold = import_midi(self.path, fold_octaves=False)
+        self.assertEqual(no_fold.notes[0]["notes"], [])
+        self.assertTrue(any("等时值休止" in w for w in no_fold.warnings))
 
     def test_percussion_channel_skipped(self):
         track = (
@@ -241,6 +269,17 @@ class TestMidiImportEdges(unittest.TestCase):
         result = import_midi(self._write(self._midi(track=track)))
         self.assertEqual(result.bpm, 96)    # 60000000/625000 = 96
 
+    def test_inspection_clamps_extreme_tempo_before_track_dialog(self):
+        track = (
+            _vlq(0) + b"\xff\x51\x03" + (120000).to_bytes(3, "big")
+            + _vlq(0) + bytes((0x90, 60, 100))
+            + _vlq(TPQ) + bytes((0x80, 60, 0))
+            + _vlq(0) + b"\xff\x2f\x00"
+        )
+        parsed = inspect_midi(self._write(self._midi(track=track)))
+        self.assertEqual(parsed.song.bpm_hint, 300)
+        self.assertTrue(any("调整为 300" in warning for warning in parsed.warnings))
+
     def test_smpte_rejected(self):
         with self.assertRaises(MidiParseError):
             import_midi(self._write(self._midi(division=0xE728)))
@@ -252,6 +291,78 @@ class TestMidiImportEdges(unittest.TestCase):
     def test_bad_magic_rejected(self):
         with self.assertRaises(MidiParseError):
             import_midi(self._write(b"not a midi file at all....."))
+
+    def test_global_tempo_map_and_utf8_track_name(self):
+        import mido
+
+        midi = mido.MidiFile(type=1, ticks_per_beat=TPQ, charset="utf8")
+        tempo = mido.MidiTrack()
+        tempo.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
+        tempo.append(mido.MetaMessage("set_tempo", tempo=1_000_000, time=TPQ))
+        midi.tracks.append(tempo)
+        melody = mido.MidiTrack()
+        melody.append(mido.MetaMessage("track_name", name="主旋律", time=0))
+        melody.append(mido.Message("note_on", note=60, velocity=100, time=0))
+        melody.append(mido.Message("note_off", note=60, velocity=0, time=TPQ))
+        melody.append(mido.Message("note_on", note=62, velocity=100, time=0))
+        melody.append(mido.Message("note_off", note=62, velocity=0, time=TPQ))
+        midi.tracks.append(melody)
+        midi.save(self.path)
+
+        parsed = inspect_midi(self.path)
+        self.assertEqual(parsed.song.tracks[1], "主旋律")
+        self.assertAlmostEqual(parsed.song.notes[0].end_s, 0.5)
+        self.assertAlmostEqual(parsed.song.notes[1].end_s, 1.5)
+        result = import_midi(self.path, track=1, style="original")
+        self.assertAlmostEqual(sum(item["dur"] for item in result.notes), 3.0)
+        self.assertTrue(any("速度变化" in warning for warning in result.warnings))
+
+
+class TestExternalJsonRecognition(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.temp.name, "external.json")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _write(self, data):
+        with open(self.path, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False)
+
+    def test_single_simulator_events_are_recognized(self):
+        self._write(
+            {
+                "title": "录制片段",
+                "events": [
+                    {"t": 0, "d": 0.4, "key": "z", "note": "1", "mouse": []},
+                    {"t": 0.5, "d": 0.4, "key": "x", "note": "2", "mouse": ["middle"]},
+                ],
+            }
+        )
+        result = import_json(self.path)
+        self.assertEqual(result.name, "录制片段")
+        self.assertEqual(result.source_format, "koufengqin-events")
+        self.assertEqual(result.notes[0]["notes"], ["mid_1"])
+        self.assertTrue(any(item.get("semitone") == 1 for item in result.notes))
+        self.assertTrue(any("120 BPM" in warning for warning in result.warnings))
+
+    def test_library_envelope_imports_every_song(self):
+        event = {"t": 0, "d": 0.5, "key": "z", "note": "1", "mouse": []}
+        self._write(
+            {
+                "app": "口风琴模拟",
+                "version": 1,
+                "library": [
+                    {"title": "一", "events": [event]},
+                    {"title": "二", "events": [event]},
+                ],
+            }
+        )
+        results = import_json_many(self.path)
+        self.assertEqual([result.name for result in results], ["一", "二"])
+        with self.assertRaisesRegex(ValueError, "包含 2 首"):
+            import_json(self.path)
 
 
 class TestDispatch(unittest.TestCase):

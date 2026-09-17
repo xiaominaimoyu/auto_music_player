@@ -104,7 +104,7 @@ class ForegroundWatcher:
             return None
         try:
             title = _get_window_title(hwnd)
-        except OSError:
+        except Exception:
             return None
         return {"hwnd": hwnd, "title": title}
 
@@ -115,11 +115,14 @@ class ForegroundWatcher:
         - 否则按快照句柄精确比对
         - 无有效目标/无法判定前台窗口:返回 True(不打断演奏)
         """
-        hwnd = _get_fg_hwnd()
-        if hwnd is None:
+        try:
+            hwnd = _get_fg_hwnd()
+            if hwnd is None:
+                return True
+            if title_override:
+                return title_override.lower() in _get_window_title(hwnd).lower()
+            if not target:
+                return True
+            return hwnd == target.get("hwnd")
+        except Exception:
             return True
-        if title_override:
-            return title_override.lower() in _get_window_title(hwnd).lower()
-        if not target:
-            return True
-        return hwnd == target.get("hwnd")

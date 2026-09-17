@@ -404,35 +404,4 @@ QLabel#StatusDot {{
     min-height: 6px;
     max-height: 6px;
 }}
-
-/* ---------- 演奏记录页 ---------- */
-QListWidget#LogTimelineList {{
-    background: {SURFACE};
-    border: 1px solid {LINE_2};
-    border-radius: {RADIUS_MD}px;
-    outline: none;
-    font-family: {FONT_MONO};
-    font-size: 12px;
-    color: {INK};
-}}
-QListWidget#LogTimelineList::item {{
-    padding: 3px 8px;
-}}
-QListWidget#LogTimelineList::item:selected {{
-    background: {SURFACE_3};
-}}
-QLabel#LogEmptyText {{
-    color: {INK_3};
-    font-size: 14px;
-}}
-QLabel#LogDetailTitle {{
-    color: {INK};
-    font-size: 16px;
-    font-weight: 600;
-}}
-QFrame#LogSummaryCard {{
-    background: {SURFACE};
-    border: 1px solid {LINE_2};
-    border-radius: {RADIUS_MD}px;
-}}
 """

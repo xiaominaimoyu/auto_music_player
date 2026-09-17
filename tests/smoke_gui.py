@@ -42,9 +42,6 @@ def run():
     assert DISCLAIMER_TITLE and DISCLAIMER_BODY and BTN_CONTINUE_TEXT and BTN_QUIT_TEXT
     disclaimer = RiskDisclaimerDialog()
     disclaimer.deleteLater()
-    # 演奏记录页冒烟:切至第 4 页(生产异步路径,showEvent 触发后台刷新) -> 切回上传页
-    QTimer.singleShot(1300, lambda: win.nav.setCurrentRow(3))
-    QTimer.singleShot(1450, lambda: win.nav.setCurrentRow(0))
     QTimer.singleShot(1500, app.quit)
     rc = app.exec()
     db.conn.close()

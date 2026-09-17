@@ -6,8 +6,8 @@
 - 中断语义除**可恢复暂停(pause)**外,新增**不可恢复中止(abort)**
 - 释放集合**直接从本次播放的事件推导**,覆盖键盘与鼠标,不依赖外部键位清单
 
-**默认档位继续走旧 `Player`(一字节未改);三角洲档位走本类,双路径由档位分发。**
-这样 M4 对鸣潮/原神的回归风险为零。
+**默认档位继续走传统 `Player`;三角洲档位走本类,双路径由档位分发。**
+两条路径只共享目标窗口保护与释放约束，不互相解释对方的输入模型。
 """
 
 import ctypes
@@ -39,6 +39,8 @@ class EventPlayer(QObject):
         self._force_abort = False
         self._abort_reason = "演奏被中断"
         self._resume_source_index = 0
+        self._dispatch_guard = None
+        self._active_events = []
         self.last_log_path = ""
         self.last_log_error = None
 
@@ -54,6 +56,14 @@ class EventPlayer(QObject):
     def resume_source_index(self):
         """最近一次暂停后应从哪个原始谱面元素重新编译。"""
         return self._resume_source_index
+
+    def set_dispatch_guard(self, guard):
+        """设置每次按下前执行的只读保护回调。
+
+        回调可返回 bool 或 ``(allowed, reason)``。松开事件和 panic_release
+        永远绕过保护，确保目标失焦时也能释放已经按下的键鼠。
+        """
+        self._dispatch_guard = guard
 
     def play(
         self,
@@ -81,10 +91,12 @@ class EventPlayer(QObject):
         self.last_log_path = ""
         self.last_log_error = None
         self._stop_event.clear()
+        event_list = list(events)
+        self._active_events = event_list
         self._thread = threading.Thread(
             target=self._run,
             args=(
-                list(events),
+                event_list,
                 interrupt_mode,
                 int(start_index),
                 str(score_name),
@@ -113,10 +125,30 @@ class EventPlayer(QObject):
         t = self._thread
         if t is not None and t.is_alive():
             t.join(join_timeout)
+            if t.is_alive():
+                # A blocked driver call must not prevent a best-effort release
+                # from the caller thread. Duplicate key-up events are harmless.
+                try:
+                    self._release_all(list(self._active_events))
+                except Exception:
+                    pass
 
     # ---------- 事件分发 ----------
+    def _require_dispatch_allowed(self):
+        if self._dispatch_guard is None:
+            return
+        result = self._dispatch_guard()
+        if isinstance(result, tuple):
+            allowed, reason = bool(result[0]), str(result[1] or "")
+        else:
+            allowed, reason = bool(result), ""
+        if not allowed:
+            raise RuntimeError(reason or "目标窗口不再允许发送输入")
+
     def _dispatch(self, e):
         d = self._driver
+        if e.action == "down":
+            self._require_dispatch_allowed()
         if e.device == "kb":
             (d.press_key if e.action == "down" else d.release_key)(e.key)
         else:
@@ -238,7 +270,10 @@ class EventPlayer(QObject):
                     "cwd": os.getcwd(),
                 }
                 plan_details.update(trace_context)
-                self._logger.log_env("playback_pipeline", **plan_details)
+                self._logger.log_env(
+                    "playback_pipeline",
+                    **plan_details,
+                )
                 self._logger.log_control(
                     "resume" if (source_start_index or 0) > 0 else "start",
                     bpm=bpm,
@@ -350,6 +385,7 @@ class EventPlayer(QObject):
                         error=footer_error,
                     )
                     self.last_log_error = self._logger.last_error
+                self._active_events = []
         if normal and tagged and resume_source_index < total:
             # 尾部休止没有输入事件，也应在完成态反映为完整乐谱。
             self._resume_source_index = total

@@ -159,7 +159,7 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
-    # 风险警示关卡:首次启动需观看 3 秒;用户确认后可选择后续启动不再弹出
+    # 风险警示关卡:启动后、主界面前的强制模态确认;异常=安全终止而非跳过
     try:
         confirmed = confirm_risk_disclaimer()
     except Exception as e:

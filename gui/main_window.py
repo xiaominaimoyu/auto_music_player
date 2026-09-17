@@ -26,8 +26,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.library_tab import LibraryTab
 from core.preview_player import PreviewPlayer
+from gui.library_tab import LibraryTab
 from gui.log_tab import PlayLogTab
 from gui.log_texts import NAV_LOG_TEXT
 from gui.player_tab import PlayerTab
@@ -176,6 +176,8 @@ class TitleBar(QWidget):
 
 
 class MainWindow(QMainWindow):
+    hotkey_stop_requested = pyqtSignal()
+
     def __init__(
         self,
         cfg,
@@ -219,7 +221,13 @@ class MainWindow(QMainWindow):
         self.resize(1080, 720)
         self.setMinimumSize(900, 600)
 
-        self.upload_tab = UploadTab(db, preview_player=self._preview_player)
+        self.upload_tab = UploadTab(
+            db,
+            preview_player=self._preview_player,
+            keymap=keymap,
+            profile=self._profile,
+            profiles=self._profiles,
+        )
         self.library_tab = LibraryTab(db)
         self.player_tab = PlayerTab(
             db,
@@ -233,14 +241,22 @@ class MainWindow(QMainWindow):
         )
 
         self._build_ui()
+        self.hotkey_stop_requested.connect(self.player_tab.mini_stop)
 
         self.upload_tab.saved.connect(self.library_tab.refresh)
         self.upload_tab.saved.connect(self.player_tab.refresh)
         self.library_tab.go_play.connect(self._go_play)
+        self.library_tab.changed.connect(self.player_tab.refresh)
 
         hotkey = str(cfg.get("player", {}).get("stop_hotkey", "F8")).lower()
-        self._hotkey_listener = pk.GlobalHotKeys({f"<{hotkey}>": self._on_hotkey_stop})
-        self._hotkey_listener.start()
+        self._hotkey_listener = None
+        try:
+            self._hotkey_listener = pk.GlobalHotKeys(
+                {f"<{hotkey}>": self._on_hotkey_stop}
+            )
+            self._hotkey_listener.start()
+        except Exception as exc:
+            self.set_status(f"全局停止热键不可用: {exc}")
 
         # 退出清理挂在 aboutToQuit(事件循环仍存活)而非 closeEvent:
         # 窗口析构阶段的 closeEvent 已处于解释器收尾期,此时调用 Win32 会引发进程 fast-fail
@@ -253,9 +269,7 @@ class MainWindow(QMainWindow):
 
     def _on_hotkey_stop(self):
         """F8 全局热键:同时停止 Player 和 EventPlayer。"""
-        self._player.stop()
-        if self._event_player is not None:
-            self._event_player.stop()
+        self.hotkey_stop_requested.emit()
 
     def _cleanup_on_quit(self):
         """退出清理:停全局热键监听与演奏线程,确保全部按键释放。"""
@@ -263,6 +277,8 @@ class MainWindow(QMainWindow):
             self._hotkey_listener.stop()
         except Exception:
             pass
+        self.upload_tab.shutdown()
+        self.player_tab.shutdown()
         self._player.shutdown()
         if self._event_player is not None:
             self._event_player.shutdown()
@@ -309,7 +325,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        footer = QLabel("v1.3.1")
+        footer = QLabel("v1.4.0-dev")
         footer.setObjectName("SidebarFooter")
         sidebar_layout.addWidget(footer)
 

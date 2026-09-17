@@ -37,6 +37,7 @@ class Player(QObject):
         self._humanize = humanize      # HumanizeParams;None = 关闭真人化
         self._stop_event = threading.Event()
         self._thread = None
+        self._dispatch_guard = None
         # 最近一次演奏的统计(P0-4 可观测性);GUI 在 finished 后读取
         self.last_summary = None
         self.last_log_path = ""
@@ -52,6 +53,21 @@ class Player(QObject):
     @property
     def is_playing(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def set_dispatch_guard(self, guard):
+        """设置每个和弦按下前执行的只读目标窗口保护回调。"""
+        self._dispatch_guard = guard
+
+    def _require_dispatch_allowed(self):
+        if self._dispatch_guard is None:
+            return
+        result = self._dispatch_guard()
+        if isinstance(result, tuple):
+            allowed, reason = bool(result[0]), str(result[1] or "")
+        else:
+            allowed, reason = bool(result), ""
+        if not allowed:
+            raise RuntimeError(reason or "目标窗口不再允许发送输入")
 
     def play(self, notes, bpm, hold_ratio=0.75, gap_ms=20, start_index=0, score_name=""):
         if self.is_playing:
@@ -149,6 +165,7 @@ class Player(QObject):
                 error_msg = None
                 try:
                     if keys:
+                        self._require_dispatch_allowed()
                         self._driver.press_chord(keys)
                         hold_interrupted = self._stop_event.wait(dur_ms * ratio_i / 1000.0)
                         self._driver.release_chord(keys)
