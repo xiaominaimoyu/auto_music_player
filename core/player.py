@@ -143,7 +143,11 @@ class Player(QObject):
                 keys = [self._keymap.key_for(nid) for nid in note["notes"]]
                 keys = [k for k in keys if k]
                 if timings is not None:
-                    off_s, ratio_i = timings[i]
+                    # plan_timings 的偏移单位是毫秒;这里的目标时间轴是秒。
+                    # 未转换会把默认 12ms 抖动/25ms 呼吸放大 1000 倍,
+                    # 让传统 Player 在人性化开启时出现数秒甚至更久的停顿。
+                    off_ms, ratio_i = timings[i]
+                    off_s = float(off_ms) / 1000.0
                 else:
                     off_s, ratio_i = 0.0, hold_ratio
                 # 目标起音 = 理想时刻 + 人性化偏移;链式保护:不早于上一音完全释放

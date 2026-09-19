@@ -176,6 +176,7 @@ class TitleBar(QWidget):
 
 
 class MainWindow(QMainWindow):
+    hotkey_play_requested = pyqtSignal()
     hotkey_stop_requested = pyqtSignal()
 
     def __init__(
@@ -241,6 +242,7 @@ class MainWindow(QMainWindow):
         )
 
         self._build_ui()
+        self.hotkey_play_requested.connect(self.player_tab.mini_play)
         self.hotkey_stop_requested.connect(self.player_tab.mini_stop)
 
         self.upload_tab.saved.connect(self.library_tab.refresh)
@@ -248,11 +250,19 @@ class MainWindow(QMainWindow):
         self.library_tab.go_play.connect(self._go_play)
         self.library_tab.changed.connect(self.player_tab.refresh)
 
-        hotkey = str(cfg.get("player", {}).get("stop_hotkey", "F8")).lower()
+        player_cfg = cfg.get("player", {})
+        play_hotkey = str(player_cfg.get("play_hotkey", "F6")).strip().lower()
+        stop_hotkey = str(player_cfg.get("stop_hotkey", "F8")).strip().lower()
         self._hotkey_listener = None
         try:
+            hotkeys = {}
+            # F8 优先保留为停止键;避免误配置同键时“播放”覆盖紧急停止。
+            if play_hotkey and play_hotkey != stop_hotkey:
+                hotkeys[f"<{play_hotkey}>"] = self._on_hotkey_play
+            if stop_hotkey:
+                hotkeys[f"<{stop_hotkey}>"] = self._on_hotkey_stop
             self._hotkey_listener = pk.GlobalHotKeys(
-                {f"<{hotkey}>": self._on_hotkey_stop}
+                hotkeys
             )
             self._hotkey_listener.start()
         except Exception as exc:
@@ -266,6 +276,10 @@ class MainWindow(QMainWindow):
 
         # 应用级事件过滤器:子控件覆盖边缘时也能命中拉伸
         QApplication.instance().installEventFilter(self)
+
+    def _on_hotkey_play(self):
+        """F6 全局热键:请求当前选中乐谱自动播放。"""
+        self.hotkey_play_requested.emit()
 
     def _on_hotkey_stop(self):
         """F8 全局热键:同时停止 Player 和 EventPlayer。"""
@@ -356,10 +370,10 @@ class MainWindow(QMainWindow):
         dot.setObjectName("StatusDot")
         self.status_label = QLabel("就绪")
         self.status_label.setObjectName("StatusText")
-        hotkey_label = QLabel("按 F8 可随时暂停演奏")
+        hotkey_label = QLabel("F6 自动播放 · F8 停止")
         hotkey_label.setObjectName("StatusText")
         hotkey_label.setToolTip(
-            "全局热键 F8:无论焦点在哪个窗口,按下 F8 会暂停当前演奏,可在演奏页「继续演奏」或「重置」"
+            "全局热键 F6:播放当前选中乐谱(仍保留倒计时);F8:无论焦点在哪个窗口都暂停当前演奏"
         )
         status_layout.addWidget(dot)
         status_layout.addWidget(self.status_label)

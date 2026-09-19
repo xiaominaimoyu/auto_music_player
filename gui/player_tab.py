@@ -1557,6 +1557,12 @@ class PlayerTab(QWidget):
     # ---------- 演奏小窗联动 ----------
 
     def mini_play(self):
+        # F6/小窗播放入口与按钮共用;演奏或倒计时中忽略重复触发。
+        if self._real_playback_active():
+            return
+        timer = getattr(self, "_countdown_timer", None)
+        if timer is not None and timer.isActive():
+            return
         self._play()
 
     def mini_stop(self):

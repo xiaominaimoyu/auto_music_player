@@ -1,11 +1,16 @@
 """真人化节奏塑形单元测试:plan_timings 结构规则 + 编译器接入。"""
 
 import random
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
 from core.compiler import CompileParams, compile_score
 from core.humanize import HumanizeParams, plan_timings
 from core.ir import IRNote, IRRest
+from core.keymap import KeyMap
+from core.player import Player
 
 # 结构性测试用零 jitter/breath/leap,让塑形规则的贡献可被精确观测
 STILL = HumanizeParams(jitter_ms=0.0, breath_ms=0.0, leap_ms=0.0)
@@ -154,3 +159,68 @@ class TestCompilerWithTimings(unittest.TestCase):
         ev = self._events(els, timings)
         downs = [e for e in ev.events if e.action == "down" and e.device == "kb"]
         self.assertEqual(len(downs), 2)
+
+
+class _TimingDriver:
+    """传统 Player 真人化接入测试用驱动,不触碰真实键盘。"""
+
+    def __init__(self):
+        self.events = []
+        self.lock = threading.Lock()
+
+    def press_chord(self, keys):
+        with self.lock:
+            self.events.append(("press", tuple(keys), time.perf_counter()))
+
+    def release_chord(self, keys):
+        with self.lock:
+            self.events.append(("release", tuple(keys), time.perf_counter()))
+
+    def release_key(self, key):
+        # Player.stop()/结束时的保险释放也必须可安全调用。
+        return None
+
+
+class TestLegacyPlayerHumanize(unittest.TestCase):
+    def test_plan_offset_ms_is_converted_before_player_wait(self):
+        """传统 Player 应把 40ms 偏移当作 0.04s,而不是等待 40s。"""
+        driver = _TimingDriver()
+        player = Player(
+            KeyMap({
+                "high": ["Q", "W", "E", "R", "T", "Y", "U"],
+                "mid": ["A", "S", "D", "F", "G", "H", "J"],
+                "low": ["Z", "X", "C", "V", "B", "N", "M"],
+            }),
+            driver=driver,
+            humanize=HumanizeParams(
+                jitter_ms=0.0,
+                breath_ms=0.0,
+                leap_ms=0.0,
+                min_gap_ms=0.0,
+            ),
+        )
+        start = time.perf_counter()
+        try:
+            with patch("core.player.plan_timings", return_value=[(40.0, 0.5)]):
+                player.play(
+                    [{"notes": ["mid_1"], "dur": 0.1}],
+                    bpm=600,
+                    gap_ms=0,
+                )
+
+            deadline = time.perf_counter() + 0.8
+            while time.perf_counter() < deadline:
+                with driver.lock:
+                    presses = [e for e in driver.events if e[0] == "press"]
+                if presses:
+                    break
+                time.sleep(0.002)
+
+            self.assertTrue(presses, "40ms 真人化偏移不应被误当成 40 秒")
+            self.assertLess(presses[0][2] - start, 0.5)
+        finally:
+            player.stop()
+            deadline = time.perf_counter() + 1.0
+            while player.is_playing and time.perf_counter() < deadline:
+                time.sleep(0.002)
+            player.shutdown()
