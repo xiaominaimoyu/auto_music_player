@@ -46,8 +46,8 @@ v1.4.1 在 v1.4.0 功能基础上恢复启动安全契约，并修复 Windows �
 ## Windows 候选产物
 
 - 文件：`AutoMusicPlayer.exe`
-- 大小：`29,088,055` 字节（约 27.35 MiB）
-- SHA-256：`E2B71BBE3B5D430D4EB9F198464B0F7DC4C7340DA7B63D3116EF6756F8706500`
+- 大小：`29,088,187` 字节（约 27.35 MiB）
+- SHA-256：`27468A4C5F8B991EC96D39597F9720C6DA6398D308641FDAF1E7CD8F2AB2DE1D`
 - Authenticode：`NotSigned`
 - 构建环境：Windows 11、Python 3.14.7、PyInstaller 6.22.2、PyQt6/Qt 6.11.0、mido 1.3.3
 
