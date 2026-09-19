@@ -42,7 +42,9 @@ BTN_CONTINUE_TEXT = "我已知晓并自愿承担全部风险，继续使用"
 BTN_QUIT_TEXT = "退出程序"
 SKIP_CHECKBOX_TEXT = "下次启动不再弹出此提示"
 COUNTDOWN_SECONDS = 3
-DISCLAIMER_SKIP_KEY = "disclaimer/skip_on_next_start"
+# 按发布版本隔离“下次不再弹出”选择。旧版本曾使用未带版本号的键，
+# 若直接复用会让升级到 v1.4.1 的用户被旧设置静默跳过启动风险提示。
+DISCLAIMER_SKIP_KEY = "disclaimer/skip_on_next_start/v1.4.1"
 _SETTINGS_ORGANIZATION = "AutoMusicPlayer"
 _SETTINGS_APPLICATION = "AutoMusicPlayer"
 
