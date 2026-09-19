@@ -207,7 +207,9 @@ class UploadTab(QWidget):
 
         # 步骤3:校对表格(底部边缘可拖高,总滚动条随高度同步)
         card3, lay3 = self._card(resizable=True)
-        card3.setup(height=300, min_height=220)
+        # 表格下方还包含编辑、步进录制、实时录制和两行状态提示;
+        # 300px 会强行压缩布局,导致这些控件在高 DPI 下互相覆盖。
+        card3.setup(height=620, min_height=588)
         lay3.addLayout(
             _step_row("3", "校对表格", "音符列可写和弦,如 high_1,mid_3;时值单位:拍")
         )
