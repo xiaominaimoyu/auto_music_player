@@ -325,7 +325,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        footer = QLabel("v1.4.0-dev")
+        footer = QLabel("v1.4.1")
         footer.setObjectName("SidebarFooter")
         sidebar_layout.addWidget(footer)
 
