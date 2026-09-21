@@ -17,8 +17,12 @@ import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from core.humanize import HumanizeParams, plan_timings
+from core.event_logger import NoteEvent
+from core.humanize import plan_timings
 from core.keyboard_driver import KeyboardDriver
+
+
+_USE_CONFIGURED_HUMANIZE = object()
 
 
 class Player(QObject):
@@ -28,19 +32,22 @@ class Player(QObject):
     error_occurred = pyqtSignal(str)     # 演奏过程中的错误信息
 
     def __init__(self, keymap, driver=None, logger=None, latency_compensation_ms=0,
-                 humanize=None, parent=None):
+                 humanize=None, parent=None, *, event_logger=None):
         super().__init__(parent)
         self._keymap = keymap
         self._driver = driver or KeyboardDriver()
         self._logger = logger
         self.latency_compensation_ms = max(0.0, float(latency_compensation_ms))
         self._humanize = humanize      # HumanizeParams;None = 关闭真人化
+        self._event_logger = event_logger
         self._stop_event = threading.Event()
         self._thread = None
         self._dispatch_guard = None
         # 最近一次演奏的统计(P0-4 可观测性);GUI 在 finished 后读取
         self.last_summary = None
         self.last_log_path = ""
+        self.last_event_log_path = ""
+        self.last_event_log_error = None
 
     @property
     def keymap(self):
@@ -69,15 +76,37 @@ class Player(QObject):
         if not allowed:
             raise RuntimeError(reason or "目标窗口不再允许发送输入")
 
-    def play(self, notes, bpm, hold_ratio=0.75, gap_ms=20, start_index=0, score_name=""):
+    def play(
+        self,
+        notes,
+        bpm,
+        hold_ratio=0.75,
+        gap_ms=20,
+        start_index=0,
+        score_name="",
+        *,
+        humanize_override=_USE_CONFIGURED_HUMANIZE,
+        trace_context=None,
+    ):
         if self.is_playing:
             return
         self.last_summary = None
         self.last_log_path = ""
+        self.last_event_log_path = ""
+        self.last_event_log_error = None
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run,
-            args=(list(notes), int(bpm), float(hold_ratio), float(gap_ms), int(start_index), str(score_name)),
+            args=(
+                list(notes),
+                int(bpm),
+                float(hold_ratio),
+                float(gap_ms),
+                int(start_index),
+                str(score_name),
+                humanize_override,
+                dict(trace_context or {}),
+            ),
             daemon=True,
         )
         self._thread.start()
@@ -107,7 +136,17 @@ class Player(QObject):
                     except Exception:
                         pass
 
-    def _run(self, notes, bpm, hold_ratio, gap_ms, start_index, score_name=""):
+    def _run(
+        self,
+        notes,
+        bpm,
+        hold_ratio,
+        gap_ms,
+        start_index,
+        score_name="",
+        humanize_override=_USE_CONFIGURED_HUMANIZE,
+        trace_context=None,
+    ):
         beat_ms = 60000.0 / max(1, bpm)
         total = len(notes)
         done = min(start_index, total)
@@ -117,14 +156,40 @@ class Player(QObject):
         gap_s = (gap_ms if gap_ms > 0 else 0.0) / 1000.0
         # 真人化节奏:每次演奏独立随机(同一谱每次演奏都有细微差异,像真人);
         # None 时全部按 0 偏移 + 固定 hold_ratio,与历史机械行为完全一致
-        if self._humanize is not None:
-            timings = plan_timings(notes, self._humanize, random.Random())
-            min_gap_s = self._humanize.min_gap_ms / 1000.0
+        humanize = (
+            self._humanize
+            if humanize_override is _USE_CONFIGURED_HUMANIZE
+            else humanize_override
+        )
+        if humanize is not None:
+            timings = plan_timings(notes, humanize, random.Random())
+            min_gap_s = humanize.min_gap_ms / 1000.0
         else:
             timings = None
             min_gap_s = 0.0
         if self._logger:
             self._logger.start(score_name, bpm, total)
+        event_log_started = False
+        if self._event_logger is not None:
+            self._event_logger.start_session(score_name, bpm, total)
+            event_log_started = self._event_logger.is_active
+            self.last_event_log_path = str(self._event_logger.log_path or "")
+            self.last_event_log_error = self._event_logger.last_error
+            if event_log_started:
+                details = {
+                    "stage": "legacy_player_started",
+                    "start_index": start_index,
+                    "gap_ms": gap_ms,
+                    "humanize_enabled": humanize is not None,
+                }
+                details.update(trace_context or {})
+                self._event_logger.log_env("playback_pipeline", **details)
+                self._event_logger.log_control(
+                    "resume" if start_index > 0 else "start",
+                    bpm=bpm,
+                    start_index=start_index,
+                    total_notes=total,
+                )
 
         # 绝对时钟调度:每个音符的目标开始时刻 = t0 + 前置音符时值槽之和 - 补偿量。
         # 到点即发,节奏不随音符数累积漂移;start_index 之前的音符同样计入时间轴。
@@ -165,7 +230,6 @@ class Player(QObject):
                 start_t = time.perf_counter()
                 actual_ms = (start_t - prev_start_t) * 1000.0 if prev_start_t is not None else None
                 dev_ms = (actual_ms - prev_sched_ms) if actual_ms is not None and prev_sched_ms is not None else None
-                ok = True
                 error_msg = None
                 try:
                     if keys:
@@ -179,17 +243,43 @@ class Player(QObject):
                     # 休止:时值由下一音符的绝对开始点体现,无需单独等待
                 except Exception as e:
                     # 先记录失败再抛出,保持原有的中止行为
-                    ok = False
                     error_msg = str(e)
                     if self._logger:
                         self._logger.log_note(i, note["notes"], keys, ok=False,
                                               sched_ms=prev_sched_ms, actual_ms=actual_ms,
                                               dev_ms=dev_ms, error=error_msg)
+                    if event_log_started:
+                        actual_s = max(0.0, start_t - t0)
+                        self._event_logger.log_note(
+                            NoteEvent(
+                                index=i,
+                                notes=list(note["notes"]),
+                                keys=list(keys),
+                                expected_time=max(0.0, cursor_s),
+                                actual_time=actual_s,
+                                deviation_ms=(actual_s - cursor_s) * 1000.0,
+                                success=False,
+                                error=error_msg,
+                            )
+                        )
                     raise
                 done = i + 1
                 if self._logger:
                     self._logger.log_note(i, note["notes"], keys, ok=True,
                                           sched_ms=prev_sched_ms, actual_ms=actual_ms, dev_ms=dev_ms)
+                if event_log_started:
+                    actual_s = max(0.0, start_t - t0)
+                    self._event_logger.log_note(
+                        NoteEvent(
+                            index=i,
+                            notes=list(note["notes"]),
+                            keys=list(keys),
+                            expected_time=max(0.0, cursor_s),
+                            actual_time=actual_s,
+                            deviation_ms=(actual_s - cursor_s) * 1000.0,
+                            success=True,
+                        )
+                    )
                 self.progress.emit(done, total)
                 prev_start_t = start_t
                 if keys:
@@ -209,6 +299,25 @@ class Player(QObject):
                     done, total, stopped_early=self._stop_event.is_set(), error=error
                 )
                 self.last_log_path = self._logger.path
+            if event_log_started:
+                self._event_logger.log_env(
+                    "playback_pipeline",
+                    stage="session_closing",
+                    completed=done,
+                    total=total,
+                    stopped=self._stop_event.is_set(),
+                    error=error,
+                )
+                self._event_logger.end_session(
+                    completed=done,
+                    total=total,
+                    stopped_early=self._stop_event.is_set() or error is not None,
+                    error=error,
+                )
+                self.last_event_log_error = self._event_logger.last_error
+                self.last_log_path = self.last_event_log_path
+                if self.last_summary is not None:
+                    self.last_summary.log_path = self.last_event_log_path
         if error:
             self.error_occurred.emit(error)
         self.finished.emit(normal)

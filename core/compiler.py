@@ -35,6 +35,7 @@ class ModifierPolicy(Enum):
 class ChordPolicy(Enum):
     """和弦降级策略(三角洲倾向不支持和弦)。"""
     CHORD_FIRST = "first"            # 取首个音(默认)
+    CHORD_HIGHEST = "highest"        # 取最高音(旋律优先)
     CHORD_REJECT = "reject"          # 丢弃整个和弦
     CHORD_ARPEGGIATE = "arpeggiate"  # 拆成琶音,时值均分
 
@@ -149,6 +150,9 @@ def resolve_chord(chord: IRChord, policy: ChordPolicy = ChordPolicy.CHORD_FIRST)
     if policy is ChordPolicy.CHORD_FIRST:
         return [chord.notes[0]], Degradation(-1, _chord_desc(chord),
                                              chord.notes[0].note_id, policy.value)
+    if policy is ChordPolicy.CHORD_HIGHEST:
+        note = max(chord.notes, key=lambda item: (item.octave, item.pitch, item.semitone))
+        return [note], Degradation(-1, _chord_desc(chord), note.note_id, policy.value)
     if policy is ChordPolicy.CHORD_REJECT:
         return [], Degradation(-1, _chord_desc(chord), "skipped", policy.value)
     n = len(chord.notes)

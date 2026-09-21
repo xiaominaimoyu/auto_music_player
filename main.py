@@ -119,16 +119,19 @@ def main():
             breath_ms=float(humanize_cfg.get("breath_ms", 18.0)),
             # 保持默认值,不在 config 暴露过多旋钮
         )
+    # 两条播放路径共用同一个事件日志目录/会话格式，记录页才能同时看到
+    # 默认 21 键与三角洲口琴演奏；PlayLogger 继续保留本地统计兼容文件。
+    event_log_dir = os.path.join(data_dir, "play_logs")
+    event_logger = configure_event_logger(event_log_dir)
     player = Player(
         keymap,
         driver=driver,
         logger=PlayLogger(os.path.join(data_dir, "logs")),
         latency_compensation_ms=float(player_cfg.get("latency_compensation_ms", 0)),
         humanize=humanize_params,
+        event_logger=event_logger,
     )
     # 事件演奏器(M4):三角洲档位走编译器 + EventPlayer,与默认 Player 共用同一驱动
-    event_log_dir = os.path.join(data_dir, "play_logs")
-    event_logger = configure_event_logger(event_log_dir)
     event_player = EventPlayer(
         driver=driver,
         latency_compensation_ms=float(player_cfg.get("latency_compensation_ms", 0)),

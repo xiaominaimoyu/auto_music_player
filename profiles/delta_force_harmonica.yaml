@@ -38,8 +38,9 @@ pitch_direct_overrides:
 # 判据:八度错 = 整句跑偏;半音错 = 味道不对
 modifier_policy: octave_first
 
-# 三角洲不支持和弦,降级为取首个音
-chord_policy: first
+# 三角洲不支持和弦。AI/钢琴谱通常把伴奏低音写在前、主旋律写在高声部，
+# 因此降级时取最高音，避免把整首歌弹成低音伴奏。
+chord_policy: highest
 
 # 三角洲没有 21 键旧模型
 legacy_keymap: null

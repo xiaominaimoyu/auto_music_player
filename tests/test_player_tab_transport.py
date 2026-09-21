@@ -168,6 +168,32 @@ class TestPlayerTabTransport(unittest.TestCase):
             tab.shutdown()
             tab.deleteLater()
 
+    def test_midi_playback_removes_timing_fragments_and_keeps_source_timeline(self):
+        midi_id = self.db.add_score(
+            "MIDI 碎片回归",
+            [
+                {"notes": [], "dur": 0.01},
+                {"notes": ["mid_1"], "dur": 0.5},
+                {"notes": ["mid_2"], "dur": 0.02},
+                {"notes": ["mid_3"], "dur": 0.5},
+            ],
+            source_file="C:/music/test.mid",
+            source_type="import",
+            bpm_default=120,
+        )
+        tab = self.make_tab()
+        try:
+            tab.select_score(midi_id)
+            self.assertEqual(len(tab._active_notes), 2)
+            tab._play()
+            self.assertEqual(tab._playback_gap_ms, 0.0)
+            self.assertIsNone(tab._playback_humanize)
+            self.assertGreater(tab._transport_degradation_count, 0)
+            tab._countdown_timer.stop()
+        finally:
+            tab.shutdown()
+            tab.deleteLater()
+
     @mock.patch(
         "gui.player_tab.inspect_target_elevation",
         return_value=assess_elevation(False, False),
@@ -197,6 +223,23 @@ class TestPlayerTabTransport(unittest.TestCase):
             self.assertFalse(tab._preflight_target())
             self.assertIn("未切换", tab.progress_state.text())
             warning.assert_called_once()
+        finally:
+            tab.shutdown()
+            tab.deleteLater()
+
+    @mock.patch("gui.player_tab.AppDialog.show_warning")
+    def test_preflight_blocks_delta_window_with_default_21_key_profile(self, warning):
+        profile = GameProfile(
+            id="default",
+            name="默认(鸣潮 / 原神)",
+            legacy_keymap=MAPPING,
+        )
+        tab = self.make_tab(profile=profile, profiles=[profile])
+        try:
+            tab._watcher = FakeWatcher({"hwnd": 12345, "title": "三角洲行动"})
+            self.assertFalse(tab._preflight_target())
+            self.assertIn("档位", tab.progress_state.text())
+            self.assertIn("三角洲", warning.call_args.args[2])
         finally:
             tab.shutdown()
             tab.deleteLater()

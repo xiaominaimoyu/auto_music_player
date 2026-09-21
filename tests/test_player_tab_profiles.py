@@ -8,7 +8,11 @@ import tempfile
 import unittest
 
 from core.profile import load_profiles
-from gui.player_tab import _update_active_profile, build_event_plan
+from gui.player_tab import (
+    _update_active_profile,
+    build_event_plan,
+    suggested_profile_for_window,
+)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILES_DIR = os.path.join(REPO_ROOT, "profiles")
@@ -100,9 +104,10 @@ class TestBuildEventPlan(unittest.TestCase):
                                       _delta(), "free_play", **KW)
         self.assertEqual(len(degs), 1)
         self.assertIn("chord", degs[0].requested)
-        # 降级为取首音,不产生多键同按
+        # 单音乐器按旋律优先取最高音,不产生多键同按
         kb = [e for e in plan.events if e.device == "kb"]
         self.assertEqual(len(kb), 2)
+        self.assertEqual({event.key for event in kb}, {"C"})
 
     def test_input_notes_not_mutated(self):
         notes = [{"notes": ["high_1"], "dur": 0.01}]
@@ -153,6 +158,23 @@ class TestUpdateActiveProfile(unittest.TestCase):
         text = open(path, encoding="utf-8").read()
         self.assertIn("app:\n", text)
         self.assertIn("active_profile: default", text)
+
+
+class TestWindowProfileHint(unittest.TestCase):
+    def test_known_game_titles_map_to_input_profiles(self):
+        self.assertEqual(
+            suggested_profile_for_window("三角洲行动 - 组队大厅"),
+            "delta_force_harmonica",
+        )
+        self.assertEqual(
+            suggested_profile_for_window("Delta Force"),
+            "delta_force_harmonica",
+        )
+        self.assertEqual(suggested_profile_for_window("鸣潮"), "default")
+        self.assertEqual(suggested_profile_for_window("Genshin Impact"), "default")
+
+    def test_unknown_window_does_not_guess(self):
+        self.assertIsNone(suggested_profile_for_window("记事本"))
 
 
 if __name__ == "__main__":

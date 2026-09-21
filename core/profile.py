@@ -48,6 +48,7 @@ _POLICY_NAMES = {
 
 _CHORD_NAMES = {
     "first": ChordPolicy.CHORD_FIRST,
+    "highest": ChordPolicy.CHORD_HIGHEST,
     "reject": ChordPolicy.CHORD_REJECT,
     "arpeggiate": ChordPolicy.CHORD_ARPEGGIATE,
 }

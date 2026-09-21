@@ -10,11 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from core.score_io import midi_to_note_id, note_id_to_midi
-from core.score_model import require_valid
+from core.score_model import MAX_DUR_BEATS, require_valid
 
 _BLACK_TO_NATURAL = {1: 0, 3: 2, 6: 5, 8: 7, 10: 9}
 _NATURAL_PCS = {0, 2, 4, 5, 7, 9, 11}
 _MIDI_MIN, _MIDI_MAX = 48, 83
+MIN_GAME_NOTE_MS = 60.0
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,84 @@ def _pitch_to_storage(pitch: int) -> tuple[str, int]:
     return note_id, semitone
 
 
+def _stabilize_short_elements(
+    notes: list[dict],
+    *,
+    bpm: float,
+    minimum_ms: float,
+    source_start: int,
+) -> tuple[list[dict], list[TransportDegradation]]:
+    """Absorb timing fragments that a game cannot sample reliably.
+
+    MIDI overlap boundaries can produce sub-millisecond notes and rests.  Each
+    removed fragment donates its duration to a retained neighbor, so cleanup
+    never shortens or lengthens the musical timeline.
+    """
+
+    if minimum_ms <= 0 or len(notes) < 2:
+        return notes, []
+    beat_ms = 60000.0 / bpm
+    long_indices = [
+        index
+        for index, item in enumerate(notes)
+        if float(item["dur"]) * beat_ms + 1e-9 >= minimum_ms
+    ]
+    if not long_indices:
+        anchor = max(range(len(notes)), key=lambda index: float(notes[index]["dur"]))
+        kept = dict(notes[anchor])
+        kept["notes"] = list(kept.get("notes") or [])
+        remaining = sum(float(item["dur"]) for item in notes)
+        collapsed = []
+        while remaining > 1e-9:
+            item = dict(kept)
+            item["notes"] = list(kept["notes"])
+            item["dur"] = min(remaining, MAX_DUR_BEATS)
+            collapsed.append(item)
+            remaining -= item["dur"]
+        degradations = [
+            TransportDegradation(
+                source_start + index,
+                f"{float(item['dur']) * beat_ms:.1f}ms 片段",
+                "并入最长片段",
+                f"低于 {minimum_ms:g}ms 游戏可演奏下限",
+            )
+            for index, item in enumerate(notes)
+            if index != anchor
+        ]
+        return collapsed, degradations
+
+    output: list[dict] = []
+    pending_duration = 0.0
+    degradations: list[TransportDegradation] = []
+    for index, source in enumerate(notes):
+        item = dict(source)
+        item["notes"] = list(source.get("notes") or [])
+        duration = float(item["dur"])
+        duration_ms = duration * beat_ms
+        if duration_ms + 1e-9 < minimum_ms:
+            degradations.append(
+                TransportDegradation(
+                    source_start + index,
+                    f"{duration_ms:.1f}ms 片段",
+                    "并入相邻片段",
+                    f"低于 {minimum_ms:g}ms 游戏可演奏下限",
+                )
+            )
+            if output:
+                output[-1]["dur"] = float(output[-1]["dur"]) + duration
+            else:
+                pending_duration += duration
+            continue
+        if pending_duration:
+            item["dur"] = duration + pending_duration
+            pending_duration = 0.0
+        output.append(item)
+
+    if pending_duration and output:
+        output[-1]["dur"] = float(output[-1]["dur"]) + pending_duration
+    return output, degradations
+
+
 def prepare_score(
     notes,
     *,
@@ -66,6 +145,8 @@ def prepare_score(
     end_index: int | None = None,
     transpose: int = 0,
     fold_octaves: bool = True,
+    bpm: float = 100,
+    min_playable_ms: float = 0.0,
 ) -> PreparedScore:
     """Slice and transpose canonical storage without touching playback code.
 
@@ -86,11 +167,30 @@ def prepare_score(
         raise ValueError(f"片段范围必须满足 0 ≤ 起点 ≤ 终点 ≤ {total}")
     if isinstance(transpose, bool) or not isinstance(transpose, int) or not -24 <= transpose <= 24:
         raise ValueError("移调必须是 -24 到 24 的整数半音")
+    if isinstance(bpm, bool) or not isinstance(bpm, (int, float)) or not 1 <= float(bpm) <= 300:
+        raise ValueError("播放 BPM 必须在 1 到 300 之间")
+    if (
+        isinstance(min_playable_ms, bool)
+        or not isinstance(min_playable_ms, (int, float))
+        or not 0 <= float(min_playable_ms) <= 1000
+    ):
+        raise ValueError("最短可演奏时值必须在 0 到 1000 毫秒之间")
 
     output = []
     degradations = []
     for absolute_index, source in enumerate(notes[start_index:end_index], start=start_index):
         ids = list(source.get("notes") or [])
+        unique_ids = list(dict.fromkeys(ids))
+        if len(unique_ids) != len(ids):
+            degradations.append(
+                TransportDegradation(
+                    absolute_index,
+                    f"和弦 {len(ids)} 个音",
+                    f"去重为 {len(unique_ids)} 个音",
+                    "重复按键会造成无效重触发",
+                )
+            )
+        ids = unique_ids
         duration = source.get("dur")
         if not ids or transpose == 0:
             item = {"notes": ids, "dur": duration}
@@ -160,6 +260,13 @@ def prepare_score(
             item["semitone"] = 1
         output.append(item)
 
+    output, timing_degradations = _stabilize_short_elements(
+        output,
+        bpm=float(bpm),
+        minimum_ms=float(min_playable_ms),
+        source_start=start_index,
+    )
+    degradations.extend(timing_degradations)
     require_valid(output)
     return PreparedScore(output, start_index, end_index, degradations)
 

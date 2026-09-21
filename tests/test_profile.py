@@ -57,7 +57,7 @@ class TestLoadRealProfiles(unittest.TestCase):
                          {"lower": "left", "semitone": "middle", "higher": "right"})
         self.assertIsNone(p.legacy_keymap, "三角洲档位没有 21 键旧模型")
         self.assertIs(p.modifier_policy, ModifierPolicy.OCTAVE_FIRST)
-        self.assertIs(p.chord_policy, ChordPolicy.CHORD_FIRST)
+        self.assertIs(p.chord_policy, ChordPolicy.CHORD_HIGHEST)
 
     def test_delta_only_enables_high_1_override(self):
         """D3:仅逗号启用;. 与 / 证据不足,MVP 不放开。"""

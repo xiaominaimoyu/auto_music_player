@@ -3,7 +3,10 @@
 运行: python -m unittest tests.test_player_stop -v
 """
 
+import json
+import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -11,6 +14,8 @@ import unittest
 from PyQt6.QtCore import Qt
 
 from core.keymap import KeyMap
+from core.event_logger import EventLogger
+from core.log_export import LogManager
 from core.player import Player
 
 MAPPING = {
@@ -141,6 +146,49 @@ class TestReleaseGuarantee(unittest.TestCase):
         self.assertFalse(any(kind == "press_chord" for kind, _ in driver.events))
         self.assertEqual(errors, ["目标窗口已失焦"])
         self.assertTrue(set(_ALL_KEYS) <= self._released_keys(driver))
+
+
+class TestLegacyEventLogging(unittest.TestCase):
+    def test_normal_player_writes_record_page_compatible_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = FakeDriver()
+            event_logger = EventLogger(directory)
+            player = Player(
+                KeyMap(MAPPING),
+                driver=driver,
+                event_logger=event_logger,
+            )
+            notes = [
+                {"notes": ["mid_1"], "dur": 0.01},
+                {"notes": [], "dur": 0.01},
+            ]
+            player.play(
+                notes,
+                bpm=300,
+                gap_ms=0,
+                score_name="默认档位日志回归",
+                humanize_override=None,
+                trace_context={"profile_id": "default"},
+            )
+            deadline = time.time() + 5
+            while player.is_playing and time.time() < deadline:
+                time.sleep(0.005)
+
+            self.assertFalse(player.is_playing)
+            self.assertFalse(event_logger.is_active)
+            self.assertTrue(player.last_event_log_path)
+            with open(player.last_event_log_path, encoding="utf-8") as stream:
+                events = [json.loads(line) for line in stream if line.strip()]
+            self.assertEqual(events[0]["type"], "session_start")
+            self.assertEqual(events[0]["score_name"], "默认档位日志回归")
+            self.assertEqual(events[-1]["type"], "session_end")
+            self.assertEqual(events[-1]["completed"], 2)
+            self.assertEqual(len([e for e in events if e["type"] == "note"]), 2)
+            traces = [e for e in events if e["type"] == "env"]
+            self.assertEqual(traces[0]["details"]["profile_id"], "default")
+            listed = LogManager(directory, os.path.join(directory, "exports")).list_logs()
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["score_name"], "默认档位日志回归")
 
 
 class TestPauseResumeSemantics(unittest.TestCase):

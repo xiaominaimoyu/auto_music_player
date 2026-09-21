@@ -29,11 +29,32 @@ from core.practice import PracticeSession, build_dual_rail_hint, build_practice_
 from core.preview_player import PreviewPlayer
 from core.profile import resolve_profile
 from core.scenario import SCENARIOS, get_scenario
-from core.transport import normalize_transport_preferences, prepare_score
+from core.transport import MIN_GAME_NOTE_MS, normalize_transport_preferences, prepare_score
 from core.window_monitor import FocusLockPolicy, ForegroundWatcher
 from core.windows_reliability import inspect_target_elevation
 from gui.theme import BRAND, INK_2, INK_3, STATE_INFO
 from gui.widgets import AppDialog
+
+
+_WINDOW_PROFILE_HINTS = {
+    "delta_force_harmonica": ("三角洲行动", "delta force"),
+    "default": ("鸣潮", "wuthering waves", "原神", "genshin impact"),
+}
+
+
+def suggested_profile_for_window(title: str) -> str | None:
+    """Return an unambiguous profile hint from a foreground game title."""
+
+    normalized = str(title or "").casefold()
+    for profile_id, aliases in _WINDOW_PROFILE_HINTS.items():
+        if any(alias.casefold() in normalized for alias in aliases):
+            return profile_id
+    return None
+
+
+def _is_midi_score(score: dict) -> bool:
+    source_file = str(score.get("source_file") or "").lower()
+    return score.get("source_type") == "import" and source_file.endswith((".mid", ".midi"))
 
 
 def build_event_plan(
@@ -164,6 +185,9 @@ class PlayerTab(QWidget):
         self._loading_preferences = False
         self._active_notes = []
         self._active_source_start = 0
+        self._active_source_type = ""
+        self._playback_gap_ms = self._gap_ms
+        self._playback_humanize = self._humanize_params
         self._practice_active = False
         self._practice_notes = []
         self._practice_index = 0
@@ -506,12 +530,15 @@ class PlayerTab(QWidget):
             return None
         start, end = self._segment_bounds()
         transpose = self.transpose_spin.value() if self._use_event_path() else 0
+        imported_timeline = _is_midi_score(score)
         return prepare_score(
             score["notes"],
             start_index=start,
             end_index=end,
             transpose=transpose,
             fold_octaves=True,
+            bpm=self.bpm_spin.value(),
+            min_playable_ms=MIN_GAME_NOTE_MS if imported_timeline else 0.0,
         )
 
     def _load_transport_preferences(self, score):
@@ -616,6 +643,7 @@ class PlayerTab(QWidget):
             return
         self._active_notes = list(prepared.notes)
         self._active_source_start = prepared.source_start
+        self._active_source_type = "midi" if _is_midi_score(score) else (score.get("source_type") or "")
         self._transport_degradation_count = len(prepared.degradations)
         self._transport_degradations = list(prepared.degradations)
         self.info_count.setText(
@@ -1106,6 +1134,12 @@ class PlayerTab(QWidget):
             return
         self._active_notes = list(prepared.notes)
         self._active_source_start = prepared.source_start
+        self._active_source_type = "midi" if _is_midi_score(score) else (score.get("source_type") or "")
+        imported_timeline = self._active_source_type == "midi"
+        # MIDI 已按绝对时间线入库；额外 gap 和真人化抖动会逐元素累积，
+        # 对短音密集歌曲造成明显改拍。导入谱演奏时保持原始时间线。
+        self._playback_gap_ms = 0.0 if imported_timeline else self._gap_ms
+        self._playback_humanize = None if imported_timeline else self._humanize_params
         self._transport_degradations = list(prepared.degradations)
         self._transport_degradation_count = len(prepared.degradations)
         if not self._use_event_path():
@@ -1231,8 +1265,8 @@ class PlayerTab(QWidget):
             settle_ms=self._settle_ms,
             release_settle_ms=self._release_settle_ms,
             hold_ratio=self._hold_ratio,
-            gap_ms=self._gap_ms,
-            humanize=self._humanize_params,
+            gap_ms=self._playback_gap_ms,
+            humanize=self._playback_humanize,
             source_index_offset=start_index,
         )
         self._event_degradation_count = len(degradations)
@@ -1248,6 +1282,9 @@ class PlayerTab(QWidget):
                 "profile_id": self._profile.id,
                 "profile_name": self._profile.name,
                 "scenario_id": scenario_id,
+                "source_type": self._active_source_type,
+                "gap_ms": self._playback_gap_ms,
+                "humanize_enabled": self._playback_humanize is not None,
                 "degradation_count": (
                     len(degradations) + self._transport_degradation_count
                 ),
@@ -1317,9 +1354,17 @@ class PlayerTab(QWidget):
                 notes,
                 bpm,
                 self._hold_ratio,
-                self._gap_ms,
+                self._playback_gap_ms,
                 start_index=start_index,
                 score_name=score_name,
+                humanize_override=self._playback_humanize,
+                trace_context={
+                    "path_type": "legacy",
+                    "profile_id": getattr(self._profile, "id", "default"),
+                    "profile_name": getattr(self._profile, "name", "默认"),
+                    "source_type": self._active_source_type,
+                    "transport_degradation_count": self._transport_degradation_count,
+                },
             )
             self.state_label.setText(f"演奏中 BPM {bpm}")
             suffix = (
@@ -1417,6 +1462,24 @@ class PlayerTab(QWidget):
                 f"当前前台窗口《{title or '未命名窗口'}》不匹配配置的目标标题。",
             )
             self.progress_state.setText("未启动：目标窗口不匹配")
+            return False
+        suggested_profile = suggested_profile_for_window(title)
+        current_profile = getattr(self._profile, "id", None)
+        if suggested_profile and current_profile != suggested_profile:
+            expected = next(
+                (profile for profile in self._profiles if profile.id == suggested_profile),
+                None,
+            )
+            expected_name = expected.name if expected is not None else suggested_profile
+            current_name = getattr(self._profile, "name", current_profile or "未选择")
+            AppDialog.show_warning(
+                self,
+                "游戏档位不匹配",
+                f"当前前台窗口《{title}》应使用“{expected_name}”，"
+                f"但当前选择的是“{current_name}”。\n"
+                "本次已停止发送按键，请切换正确游戏档位后重新开始。",
+            )
+            self.progress_state.setText("未启动：游戏档位与目标窗口不匹配")
             return False
         assessment = inspect_target_elevation(current.get("hwnd"))
         self._target_elevation = assessment

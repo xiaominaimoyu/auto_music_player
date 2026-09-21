@@ -85,6 +85,15 @@ class TestResolveChord(unittest.TestCase):
         self.assertEqual(notes[0].note_id, "mid_1")
         self.assertEqual(deg.reason, "first")
 
+    def test_highest_keeps_melody_voice(self):
+        chord = IRChord(
+            (IRNote(6, -1, 0), IRNote(3, 0, 0), IRNote(1, 1, 0)),
+            2.0,
+        )
+        notes, deg = resolve_chord(chord, ChordPolicy.CHORD_HIGHEST)
+        self.assertEqual([note.note_id for note in notes], ["high_1"])
+        self.assertEqual(deg.reason, "highest")
+
     def test_reject(self):
         notes, deg = resolve_chord(self._chord(), ChordPolicy.CHORD_REJECT)
         self.assertEqual(notes, [])

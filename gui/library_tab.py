@@ -24,6 +24,7 @@ from core.score_io import (
     inspect_midi,
 )
 from core.score_model import ScoreValidationError
+from core.transport import MIN_GAME_NOTE_MS, prepare_score
 from gui.import_dialog import MidiImportDialog
 from gui.score_editor_dialog import ScoreEditorDialog
 from gui.theme import BRAND, INK_2, STATE_INFO, STATE_SUCCESS
@@ -210,16 +211,31 @@ class LibraryTab(QWidget):
                 if dialog.exec() != dialog.DialogCode.Accepted:
                     return
                 options = dialog.options()
-                results = [
-                    import_midi(
-                        path,
-                        track=options.track,
-                        style=options.style,
-                        transpose=options.transpose,
-                        fold_octaves=options.fold_octaves,
-                        bpm=int(options.bpm) if options.bpm is not None else None,
+                result = import_midi(
+                    path,
+                    track=options.track,
+                    style=options.style,
+                    transpose=options.transpose,
+                    fold_octaves=options.fold_octaves,
+                    bpm=int(options.bpm) if options.bpm is not None else None,
+                )
+                prepared = prepare_score(
+                    result.notes,
+                    bpm=result.bpm,
+                    min_playable_ms=MIN_GAME_NOTE_MS,
+                )
+                timing_cleanup_count = sum(
+                    "游戏可演奏下限" in item.reason
+                    for item in prepared.degradations
+                )
+                result.notes = prepared.notes
+                result.degradations.extend(prepared.degradations)
+                if timing_cleanup_count:
+                    result.warnings.append(
+                        f"已将 {timing_cleanup_count} 个短于 {MIN_GAME_NOTE_MS:g}ms、"
+                        "游戏难以稳定采样的碎片并入相邻旋律，歌曲总时长不变。"
                     )
-                ]
+                results = [result]
             else:
                 results = import_many(path)
         except ScoreValidationError as e:

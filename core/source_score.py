@@ -168,7 +168,7 @@ def _validate_note_sequence(notes: Sequence[SourceNote]) -> list[SourceNote]:
 
 
 def recommend_track(song: SourceSong) -> int:
-    """优先旋律命名轨，再从有足够音符的轨道推荐高声部。"""
+    """优先明确旋律轨，再推荐单声部、可演奏密度稳定的轨道。"""
 
     validate_source_song(song)
     groups = {
@@ -178,20 +178,48 @@ def recommend_track(song: SourceSong) -> int:
     groups = {track: notes for track, notes in groups.items() if notes}
     if not groups:
         raise ValueError("所选文件没有可适配的旋律音符")
+    names = _track_names(song)
+    positive_words = ("melody", "vocal", "lead", "主旋律", "人声", "旋律")
+    negative_words = (
+        "drum", "perc", "bass", "chord", "accomp", "鼓", "打击", "贝斯", "伴奏", "和弦"
+    )
     largest = max(len(notes) for notes in groups.values())
     candidates = [
         track for track, notes in groups.items()
-        if len(notes) >= max(1, largest * 0.2)
+        if len(notes) >= max(1, largest * 0.1)
+        or any(word in names.get(track, "").lower() for word in positive_words)
     ]
-    names = _track_names(song)
 
     def score(track):
         name = names.get(track, "").lower()
-        named = any(word in name for word in ("melody", "vocal", "lead", "主旋律", "人声"))
+        named = any(word in name for word in positive_words)
+        negative = any(word in name for word in negative_words)
         notes = groups[track]
         weights = [min(note.end_s - note.start_s, 1.0) for note in notes]
         weighted_pitch = sum(note.pitch * weight for note, weight in zip(notes, weights)) / sum(weights)
-        return named, weighted_pitch, -track
+        ordered = sorted(notes, key=lambda item: (item.start_s, item.end_s, item.pitch))
+        non_overlapping = 0
+        active_end = -1.0
+        for note in ordered:
+            if note.start_s >= active_end - _EPSILON:
+                non_overlapping += 1
+            active_end = max(active_end, note.end_s)
+        monophonic_ratio = non_overlapping / len(ordered)
+        playable_ratio = sum(
+            note.end_s - note.start_s >= 0.06 for note in ordered
+        ) / len(ordered)
+        span = max(note.end_s for note in ordered) - min(note.start_s for note in ordered)
+        density = len(ordered) / max(span, 0.001)
+        density_score = -abs(density - 2.5)
+        return (
+            named,
+            not negative,
+            monophonic_ratio,
+            playable_ratio,
+            density_score,
+            weighted_pitch,
+            -track,
+        )
 
     return max(candidates, key=score)
 

@@ -158,6 +158,8 @@ def test_ai_prompt_defines_keyboard_octaves_and_forbids_underscore_as_low_note()
     assert "Z/X/C/V/B/N/M 分别是低音" in JIANPU_PROMPT
     assert "下划线 _ 只表示时值" in JIANPU_PROMPT
     assert "7_1" in JIANPU_PROMPT
+    assert "默认只提取歌曲的主旋律" in JIANPU_PROMPT
+    assert "不要混入钢琴左手" in JIANPU_PROMPT
 
 
 def test_upload_ai_ambiguity_clears_previous_table_and_blocks_save_path(

@@ -43,6 +43,22 @@ class TestTrackAndCleanup(unittest.TestCase):
         self.assertEqual(adapted.selected_track, 1)
         self.assertEqual([item["notes"] for item in adapted.notes], [["mid_1"], ["mid_2"], ["mid_3"]])
 
+    def test_recommend_track_rejects_high_dense_accompaniment(self):
+        accompaniment = [
+            SourceNote(index * 0.25, index * 0.25 + 1.0, 76 + index % 4, 0)
+            for index in range(12)
+        ]
+        melody = [
+            SourceNote(index, index + 0.8, 60 + index * 2, 1)
+            for index in range(4)
+        ]
+        song = _song(
+            accompaniment + melody,
+            tracks={0: "Piano accompaniment", 1: "Vocal melody"},
+            duration_s=4,
+        )
+        self.assertEqual(recommend_track(song), 1)
+
     def test_global_monophonic_keeps_repeated_note_as_new_event(self):
         notes = [
             SourceNote(0, 3, 60),
