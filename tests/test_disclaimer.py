@@ -201,9 +201,25 @@ class TestConfirmRiskDisclaimer(unittest.TestCase):
             self.assertTrue(confirm_risk_disclaimer(settings=settings))
 
     def test_legacy_skip_preference_does_not_skip_current_release_dialog(self):
-        """升级用户的旧版跳过设置不能绕过 v1.4.1 启动风险提示。"""
+        """升级用户的旧版跳过设置不能绕过 v1.4.2 启动风险提示。"""
         legacy_key = "disclaimer/skip_on_next_start"
         settings = MemorySettings({legacy_key: "true"})
+        with patch.object(
+            RiskDisclaimerDialog,
+            "exec",
+            lambda self: (
+                self._countdown_timer.stop(),
+                RiskDisclaimerDialog.DialogCode.Rejected,
+            )[1],
+        ):
+            self.assertFalse(confirm_risk_disclaimer(settings=settings))
+        self.assertNotIn(DISCLAIMER_SKIP_KEY, settings.values)
+
+    def test_v141_skip_preference_does_not_skip_v142_dialog(self):
+        """v1.4.1 的确认只能跳过旧版本，不能静默跳过 v1.4.2。"""
+        settings = MemorySettings({
+            "disclaimer/skip_on_next_start/v1.4.1": "true",
+        })
         with patch.object(
             RiskDisclaimerDialog,
             "exec",

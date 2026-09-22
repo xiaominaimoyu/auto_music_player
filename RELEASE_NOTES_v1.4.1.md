@@ -34,28 +34,20 @@ v1.4.1 在 v1.4.0 功能基础上恢复启动安全契约，并修复 Windows �
 - 主窗口与 `version.txt` 统一为 v1.4.1。
 - 恢复所有路径形式下的 `icu*.dll` 打包过滤，并增加防回退测试，避免构建机中的 Poppler/Conda ICU 遮蔽 Windows 系统 ICU、造成 QtCore 启动失败。
 
-### 2026-09-21 演奏可辨识度与日志补充修复
-
-- 自动 MIDI 选轨优先明确的主旋律、人声或 Lead 轨，并结合单声部比例、可演奏时值和事件密度，避免误选高音伴奏或碎片轨。
-- MIDI 导入及既有 MIDI 乐谱播放时，会将短于 60ms、游戏难以稳定采样的碎片并入相邻旋律，同时保持歌曲总时长不变；播放时不再叠加额外间隔和真人化抖动。
-- 外部 AI 提示词明确只提取主旋律/人声旋律，排除钢琴左手、低音、鼓点、分解和弦及其他伴奏声部。
-- 三角洲行动口琴不支持和弦时改为保留最高旋律音，并去除重复按键；检测到前台游戏与所选 Profile 明确不匹配时，会在发送按键前停止并提示切换档位。
-- 默认 21 键 `Player` 与三角洲 `EventPlayer` 现在共用 `data/play_logs` 事件日志会话格式，演奏记录页可以读取两条路径的新日志；原有 `data/logs` 兼容日志不会自动迁移。
-
 ## 验证结果
 
-- 本次定向回归：`129 passed, 1 skipped, 8 subtests passed`。
-- 完整 unittest：`435 tests, OK (skipped=2)`。
-- 完整 pytest：`503 passed, 2 skipped, 14 subtests passed`。
+- 旧缺陷定向回归：`228 passed, 2 skipped, 6 subtests passed`。
+- 完整 unittest：`422 tests, OK (skipped=2)`。
+- 完整 pytest：`489 passed, 2 skipped, 14 subtests passed`。
 - 离屏 GUI 冒烟：`GUI smoke OK`。
-- Windows 单文件候选包连续运行 6 秒，主/子进程均保持存活；随后按精确进程路径清理，未留下残余进程。
-- 包内检查：本次修复模块、`THIRD_PARTY_NOTICES.md`、`config.yaml`、2 个 Profile、`mido` 与 `pynput` 均存在；`icu*.dll` 为 0 个。
+- Windows 单文件候选包连续运行 5 秒，随后按精确进程路径清理，未留下残余进程。
+- 包内检查：`THIRD_PARTY_NOTICES.md`、`config.yaml`、2 个 Profile、`mido` 与 `pynput` 均存在；`icu*.dll` 为 0 个。
 
 ## Windows 候选产物
 
 - 文件：`AutoMusicPlayer.exe`
-- 大小：`28,686,001` 字节（约 27.36 MiB）
-- SHA-256：`04DC3D0FC5C58425995E228720EBA11ACCBA6903E623F42C99D2A1CD769D3DD7`
+- 大小：`29,088,187` 字节（约 27.35 MiB）
+- SHA-256：`27468A4C5F8B991EC96D39597F9720C6DA6398D308641FDAF1E7CD8F2AB2DE1D`
 - Authenticode：`NotSigned`
 - 构建环境：Windows 11、Python 3.14.7、PyInstaller 6.22.2、PyQt6/Qt 6.11.0、mido 1.3.3
 
@@ -64,9 +56,8 @@ v1.4.1 在 v1.4.0 功能基础上恢复启动安全契约，并修复 Windows �
 - 首次启动会显示风险提示和 3 秒阅读锁定；请阅读并确认后使用。自动演奏可能违反目标游戏规则，请自行评估账号和环境风险。
 - 正式演奏前请确认目标窗口、权限级别和游戏档位正确；需要管理员权限时，程序与目标窗口的权限级别应保持一致。不要直接在重要账号或未验证环境中长时间运行。
 - MIDI 导入会将复杂编曲适配为有限音域的游戏谱，可能忽略打击乐、清理复调、折回超范围音符或保留休止；请以导入降级报告和试听结果为准。
-- 更新后新演奏会写入记录页使用的 `data/play_logs`；旧版本已经生成在 `data/logs` 的兼容日志仍会保留，但不会自动显示为新格式记录。
 - 当前 Windows EXE 未做代码签名，系统可能显示安全提示；下载后建议核对上方 SHA-256。升级前请备份 `data/scores.db`。
-- 本版本的自动化测试、普通权限启动和包内容检查不等同于真实游戏听感、管理员权限/UIPI、反作弊环境或长期演奏验收；请先在低风险环境短段复测。
+- 本版本的自动化测试、普通权限启动和包内容检查不等同于真实游戏、管理员权限/UIPI、反作弊环境或长期演奏验收。
 
 ## 升级与验收边界
 
