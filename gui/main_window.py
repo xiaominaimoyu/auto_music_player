@@ -236,6 +236,13 @@ class MainWindow(QMainWindow):
             keymap=keymap,
             profile=self._profile,
             profiles=self._profiles,
+            playback_active=lambda: bool(
+                self._player.is_playing
+                or (
+                    self._event_player is not None
+                    and self._event_player.is_playing
+                )
+            ),
         )
         self.library_tab = LibraryTab(db)
         self.player_tab = PlayerTab(

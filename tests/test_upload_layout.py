@@ -50,6 +50,8 @@ def test_proofreading_card_keeps_recording_controls_inside_card():
                 tab.record_semitone_btn,
                 tab.live_record_btn,
                 tab.live_stop_btn,
+                tab.live_discard_btn,
+                tab.capture_training_check,
                 tab.live_record_status,
                 tab.preview_status,
             )

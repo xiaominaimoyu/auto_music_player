@@ -1,6 +1,9 @@
+import json
 import os
 import sys
 import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -43,6 +46,19 @@ class FakeDriver:
         self.events.append(("release_chord", tuple(keys)))
 
 
+class FakeListener:
+    def __init__(self, **callbacks):
+        self.callbacks = callbacks
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
 def ensure_qapp():
     global _app
     _app = QApplication.instance() or QApplication(sys.argv)
@@ -72,6 +88,124 @@ def test_upload_step_recording_appends_editable_notes():
             tab._delete_last_table_row()
             assert tab.table.rowCount() == 2
         finally:
+            tab.deleteLater()
+            db.conn.close()
+
+
+def test_live_recording_opt_in_persists_privacy_bounded_training_sample():
+    ensure_qapp()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = ScoreDB(os.path.join(temp_dir, "scores.db"))
+        tab = UploadTab(
+            db,
+            preview_player=FakePreviewPlayer(),
+            keymap=KeyMap(MAPPING),
+        )
+        try:
+            tab.capture_training_check.setChecked(True)
+            with (
+                patch("pynput.keyboard.Listener", FakeListener),
+                patch("pynput.mouse.Listener", FakeListener),
+            ):
+                tab._start_live_recording()
+                assert tab._live_recorder is not None
+                assert tab._live_capture is not None
+                assert not tab.capture_training_check.isEnabled()
+
+                assert tab._live_recorder.press("A")
+                assert tab._live_recorder.release("A")
+                tab._stop_live_recording()
+
+            completed = list(
+                (Path(temp_dir) / "performance_captures" / "completed").glob(
+                    "*.jsonl"
+                )
+            )
+            assert len(completed) == 1
+            records = [
+                json.loads(line)
+                for line in completed[0].read_text(encoding="utf-8").splitlines()
+            ]
+            events = [record["event"] for record in records if record["record"] == "event"]
+            assert [event["type"] for event in events] == ["note_down", "note_up"]
+            assert all(
+                set(event)
+                <= {
+                    "type",
+                    "press_id",
+                    "relative_ns",
+                    "note_id",
+                    "semitone",
+                    "modifier",
+                    "synthetic_close",
+                }
+                for event in events
+            )
+            assert {event["modifier"] for event in events} == {"legacy"}
+            assert records[-1]["status"] == "completed"
+            assert records[-1]["captured_count"] == 1
+            assert records[-1]["canonical_notes"] == tab._table_to_notes()
+            assert tab.table.rowCount() == 1
+            assert tab.capture_training_check.isEnabled()
+            assert tab.live_discard_btn.isEnabled() is False
+        finally:
+            tab.shutdown()
+            tab.deleteLater()
+            db.conn.close()
+
+
+def test_live_recording_discard_never_completes_or_updates_score_table():
+    ensure_qapp()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = ScoreDB(os.path.join(temp_dir, "scores.db"))
+        tab = UploadTab(
+            db,
+            preview_player=FakePreviewPlayer(),
+            keymap=KeyMap(MAPPING),
+        )
+        try:
+            tab.capture_training_check.setChecked(True)
+            with (
+                patch("pynput.keyboard.Listener", FakeListener),
+                patch("pynput.mouse.Listener", FakeListener),
+            ):
+                tab._start_live_recording()
+                assert tab._live_recorder.press("A")
+                tab._discard_live_recording()
+
+            root = Path(temp_dir) / "performance_captures"
+            assert not list((root / "completed").glob("*.jsonl"))
+            rejected = list((root / "rejected").glob("*.jsonl"))
+            assert len(rejected) == 1
+            end = json.loads(rejected[0].read_text(encoding="utf-8").splitlines()[-1])
+            assert end["status"] == "rejected"
+            assert end["reason"] == "user_discarded"
+            assert tab.table.rowCount() == 0
+        finally:
+            tab.shutdown()
+            tab.deleteLater()
+            db.conn.close()
+
+
+def test_live_recording_is_blocked_while_playback_is_active():
+    ensure_qapp()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = ScoreDB(os.path.join(temp_dir, "scores.db"))
+        tab = UploadTab(
+            db,
+            preview_player=FakePreviewPlayer(),
+            keymap=KeyMap(MAPPING),
+            playback_active=lambda: True,
+        )
+        try:
+            with patch("gui.upload_tab.AppDialog.show_warning") as warning:
+                tab._start_live_recording()
+            assert tab._live_recorder is None
+            assert tab._live_capture is None
+            warning.assert_called_once()
+            assert "停止演奏" in warning.call_args.args[2]
+        finally:
+            tab.shutdown()
             tab.deleteLater()
             db.conn.close()
 

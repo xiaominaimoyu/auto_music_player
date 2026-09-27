@@ -5,12 +5,14 @@
 粘贴回来解析即可,全程无需 API Key。
 """
 
+import os
 import sqlite3
 import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -29,11 +31,13 @@ from PyQt6.QtWidgets import (
 )
 
 from core.parser import AI_MISSING_SEPARATOR_REASON, parse_jianpu
+from core.performance_capture import PerformanceCapture
 from core.practice import StepRecorder
 from core.prompt import JIANPU_PROMPT
 from core.preview_player import PreviewPlayer
 from core.recording import PerformanceRecorder, PhysicalNoteResolver
 from core.score_model import validate_notes
+from core.version import APP_VERSION
 from core.jianpu_editor import insert_rest, delete_event
 from gui.widgets import AppDialog, BottomResizableCard
 
@@ -113,12 +117,14 @@ class UploadTab(QWidget):
         keymap=None,
         profile=None,
         profiles=None,
+        playback_active=None,
     ):
         super().__init__()
         self._db = db
         self._record_keymap = keymap
         self._record_profile = profile
         self._record_profiles = list(profiles or [])
+        self._playback_active = playback_active or (lambda: False)
         self._preview_player = (
             preview_player if preview_player is not None else PreviewPlayer(self)
         )
@@ -130,6 +136,10 @@ class UploadTab(QWidget):
         self._live_mouse_listener = None
         self._live_mouse = set()
         self._live_lock = threading.Lock()
+        self._live_capture = None
+        self._live_bpm = None
+        self._live_quantize_beats = None
+        self._live_stop_reason = None
         self._build_ui()
         self.live_count_changed.connect(self._on_live_count_changed)
         self.live_stop_requested.connect(self._stop_live_recording)
@@ -365,13 +375,35 @@ class UploadTab(QWidget):
         self.live_stop_btn.setObjectName("BtnSecondary")
         self.live_stop_btn.setEnabled(False)
         self.live_stop_btn.clicked.connect(self._stop_live_recording)
+        self.live_discard_btn = QPushButton("取消并丢弃")
+        self.live_discard_btn.setObjectName("BtnDanger")
+        self.live_discard_btn.setEnabled(False)
+        self.live_discard_btn.setToolTip("停止监听且不生成乐谱；已开始的研究样本会标记为已丢弃")
+        self.live_discard_btn.clicked.connect(self._discard_live_recording)
         live_row.addWidget(live_label)
         live_row.addWidget(self.record_profile_combo)
         live_row.addWidget(self.record_quantize_combo)
         live_row.addWidget(self.live_record_btn)
         live_row.addWidget(self.live_stop_btn)
+        live_row.addWidget(self.live_discard_btn)
         live_row.addStretch(1)
         lay3.addLayout(live_row)
+
+        capture_row = QHBoxLayout()
+        self.capture_training_check = QCheckBox("保存为本地表现研究样本")
+        self.capture_training_check.setChecked(False)
+        self.capture_training_check.setToolTip(
+            "仅保存本次录制中已映射成音符的相对时序；"
+            "不保存未映射按键、鼠标坐标、窗口信息，也不会上传"
+        )
+        capture_privacy = QLabel(
+            "显式勾选后才写入本机数据目录；可用“取消并丢弃”放弃本次样本。"
+        )
+        capture_privacy.setObjectName("SectionSubtitle")
+        capture_row.addWidget(self.capture_training_check)
+        capture_row.addWidget(capture_privacy)
+        capture_row.addStretch(1)
+        lay3.addLayout(capture_row)
 
         self.live_record_status = QLabel(
             "选择档位后开始；按 Esc 或“停止并写入表格”结束录制。"
@@ -612,6 +644,13 @@ class UploadTab(QWidget):
     def _start_live_recording(self, *_args):
         if self._live_recorder is not None:
             return
+        if self._playback_active():
+            AppDialog.show_warning(
+                self,
+                "无法录制",
+                "自动演奏仍在运行，请先停止演奏，再开始实时录制。",
+            )
+            return
         profile = self.record_profile_combo.currentData()
         resolver = PhysicalNoteResolver(
             keymap=self._record_keymap,
@@ -621,9 +660,33 @@ class UploadTab(QWidget):
             AppDialog.show_warning(self, "无法录制", "当前档位没有可反向识别的音键映射")
             return
         self._stop_preview()
-        recorder = PerformanceRecorder(resolver)
+        bpm = int(self.bpm_spin.value())
+        quantize_beats = float(self.record_quantize_combo.currentData() or 0.0)
+        capture = None
+        if self.capture_training_check.isChecked():
+            try:
+                capture = PerformanceCapture.start(
+                    os.path.join(self._db.data_dir, "performance_captures"),
+                    app_version=APP_VERSION,
+                    profile_id=str(getattr(profile, "id", None) or "default"),
+                    mapping_mode=resolver.mapping_mode,
+                    mapping_hash=resolver.mapping_hash,
+                    bpm=bpm,
+                    quantize=quantize_beats,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                AppDialog.show_error(self, "研究样本创建失败", str(exc))
+                return
+        recorder = PerformanceRecorder(
+            resolver,
+            event_sink=capture.append_event if capture is not None else None,
+        )
         recorder.start()
         self._live_recorder = recorder
+        self._live_capture = capture
+        self._live_bpm = bpm
+        self._live_quantize_beats = quantize_beats
+        self._live_stop_reason = "button"
         try:
             from pynput import keyboard as pk
             from pynput import mouse as pm
@@ -631,6 +694,7 @@ class UploadTab(QWidget):
             def on_press(key):
                 token = self._live_key_name(key)
                 if token == "esc":
+                    self._live_stop_reason = "escape"
                     self.live_stop_requested.emit()
                     return False
                 if not token:
@@ -661,23 +725,47 @@ class UploadTab(QWidget):
         except Exception as exc:
             recorder.cancel()
             self._live_recorder = None
+            self._live_capture = None
+            self._live_bpm = None
+            self._live_quantize_beats = None
+            self._live_stop_reason = None
             self._stop_live_listeners()
+            if capture is not None:
+                try:
+                    capture.reject("listener_start_failed")
+                except (OSError, RuntimeError, ValueError):
+                    pass
             AppDialog.show_error(self, "录制监听启动失败", str(exc))
             return
-        self.live_record_btn.setEnabled(False)
-        self.live_stop_btn.setEnabled(True)
-        self.record_profile_combo.setEnabled(False)
-        self.record_quantize_combo.setEnabled(False)
-        self.preview_btn.setEnabled(False)
+        self._set_live_recording_controls(True)
+        sample_status = "；本次会保存本地研究样本" if capture is not None else ""
         self.live_record_status.setText(
-            "实时录制中 · 已录到 0 个音；支持同时按键形成和弦，Esc 可停止。"
+            f"实时录制中 · 已录到 0 个音；支持同时按键形成和弦，Esc 可停止{sample_status}。"
         )
 
     def _on_live_count_changed(self, count):
         if self._live_recorder is not None:
+            sample_status = "；本地样本同步记录中" if self._live_capture is not None else ""
             self.live_record_status.setText(
-                f"实时录制中 · 已录到 {int(count)} 个音；停止后将按当前网格量化。"
+                f"实时录制中 · 已录到 {int(count)} 个音；停止后将按当前网格量化"
+                f"{sample_status}。"
             )
+
+    def _set_live_recording_controls(self, active: bool):
+        self.live_record_btn.setEnabled(
+            not active
+            and (self._record_keymap is not None or bool(self._record_profiles))
+        )
+        self.live_stop_btn.setEnabled(active)
+        self.live_discard_btn.setEnabled(active)
+        self.record_profile_combo.setEnabled(not active)
+        self.record_quantize_combo.setEnabled(not active)
+        self.capture_training_check.setEnabled(not active)
+        self.bpm_spin.setEnabled(not active)
+        if active:
+            self.preview_btn.setEnabled(False)
+        else:
+            self._update_preview_button()
 
     def _stop_live_listeners(self):
         for attr in ("_live_keyboard_listener", "_live_mouse_listener"):
@@ -695,38 +783,119 @@ class UploadTab(QWidget):
         recorder = self._live_recorder
         if recorder is None:
             return
+        capture = self._live_capture
+        bpm = self._live_bpm
+        quantize_beats = self._live_quantize_beats
+        stop_reason = self._live_stop_reason or "button"
         self._stop_live_listeners()
         self._live_recorder = None
-        self.live_record_btn.setEnabled(True)
-        self.live_stop_btn.setEnabled(False)
-        self.record_profile_combo.setEnabled(True)
-        self.record_quantize_combo.setEnabled(True)
+        self._live_capture = None
+        self._live_bpm = None
+        self._live_quantize_beats = None
+        self._live_stop_reason = None
+        self._set_live_recording_controls(False)
         try:
             result = recorder.stop(
-                bpm=self.bpm_spin.value(),
-                quantize_beats=float(self.record_quantize_combo.currentData() or 0.0),
+                bpm=int(bpm),
+                quantize_beats=float(quantize_beats),
                 title=self.name_edit.text().strip() or "实时录制",
             )
         except (RuntimeError, ValueError) as exc:
-            self._update_preview_button()
+            if capture is not None:
+                try:
+                    capture.reject("empty_or_invalid_recording")
+                except (OSError, RuntimeError, ValueError):
+                    pass
             self.live_record_status.setText(str(exc))
             AppDialog.show_warning(self, "录制未写入", str(exc))
             return
+        capture_report = ""
+        if capture is not None:
+            if result.capture_errors:
+                try:
+                    capture.reject("capture_write_failed")
+                except (OSError, RuntimeError, ValueError):
+                    pass
+                capture_report = "；研究样本写入失败，已排除出训练集"
+            else:
+                try:
+                    for _ in range(result.ignored_count):
+                        capture.append_ignored("unmapped_or_conflicting_input")
+                    capture_result = capture.finalize(
+                        reason=stop_reason,
+                        canonical_notes=result.notes,
+                        captured_count=result.captured_count,
+                        duration_s=result.duration_s,
+                        warnings=result.warnings,
+                        degradations=[
+                            {
+                                "code": item.code,
+                                "count": item.count,
+                                "message": item.message,
+                            }
+                            for item in result.degradations
+                        ],
+                    )
+                    quality = capture_result.summary["quality"]
+                    eligibility = (
+                        "可用于训练" if quality["training_eligible"] else "已标记需复核"
+                    )
+                    capture_report = (
+                        f"；本地样本 {capture_result.path.name} 已保存（{eligibility}）"
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    try:
+                        capture.reject("finalize_failed")
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                    capture_report = f"；研究样本未完成：{exc}"
         for item in result.notes:
             self._append_table_item(item)
         report = f"已录到 {result.captured_count} 个音，转换为 {len(result.notes)} 个可编辑时间元素"
         if result.warnings:
             report += "；" + "；".join(result.warnings[:3])
+        report += capture_report
         self.live_record_status.setText(report)
         self.parse_status.setText(report + "。可继续校对、试听或保存。")
         self._update_preview_button()
 
-    def shutdown(self):
+    def _discard_live_recording(
+        self,
+        *_args,
+        reason: str = "user_discarded",
+        notify: bool = True,
+    ):
         recorder = self._live_recorder
+        capture = self._live_capture
+        if recorder is None and capture is None:
+            return
         self._live_recorder = None
+        self._live_capture = None
+        self._live_bpm = None
+        self._live_quantize_beats = None
+        self._live_stop_reason = None
         self._stop_live_listeners()
         if recorder is not None:
             recorder.cancel()
+        rejected = False
+        if capture is not None:
+            try:
+                capture.reject(reason)
+                rejected = True
+            except (OSError, RuntimeError, ValueError):
+                pass
+        self._set_live_recording_controls(False)
+        if notify:
+            suffix = "；本地研究样本已标记为丢弃" if rejected else ""
+            self.live_record_status.setText(f"本次实时录制已取消，未写入校对表格{suffix}。")
+
+    def shutdown(self):
+        self._discard_live_recording(reason="app_shutdown", notify=False)
+
+    def hideEvent(self, event):
+        if self._live_recorder is not None or self._live_capture is not None:
+            self._discard_live_recording(reason="page_hidden", notify=False)
+        super().hideEvent(event)
 
     def _insert_rest_at_selection(self, before: bool):
         """在选中音符的前/后插入半拍休止符。"""
