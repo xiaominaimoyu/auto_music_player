@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.app_identity import is_store_package
 from core.preview_player import PreviewPlayer
 from core.update_checker import check_for_update
 from core.version import APP_VERSION, UPDATE_SEQUENCE
@@ -210,6 +211,7 @@ class MainWindow(QMainWindow):
         self._event_player = event_player
         self._event_log_dir = event_log_dir
         self._export_dir = export_dir
+        self._store_package = is_store_package()
         self._preview_player = (
             preview_player if preview_player is not None else PreviewPlayer(self)
         )
@@ -286,6 +288,7 @@ class MainWindow(QMainWindow):
         if (
             bool(update_cfg.get("enabled"))
             and getattr(sys, "frozen", False)
+            and not self._store_package
             and self._update_check_due(update_cfg)
         ):
             QTimer.singleShot(1500, lambda: self._check_updates(silent=True))
@@ -377,8 +380,10 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        update_btn = QPushButton("检查更新")
+        update_btn = QPushButton("Store 更新" if self._store_package else "检查更新")
         update_btn.setObjectName("BtnSecondary")
+        if self._store_package:
+            update_btn.setToolTip("Store 版由 Microsoft Store 管理主程序更新")
         update_btn.clicked.connect(self._check_updates)
         sidebar_layout.addWidget(update_btn)
 
@@ -474,6 +479,16 @@ class MainWindow(QMainWindow):
 
     def _check_updates(self, silent=False):
         """第一阶段只检查并提示；不下载、不替换当前 EXE。"""
+
+        if self._store_package:
+            if not silent:
+                AppDialog.show_info(
+                    self,
+                    "Microsoft Store 更新",
+                    "Store 版主程序更新由 Microsoft Store 管理。\n"
+                    "请在 Microsoft Store 中查看更新；离线 OMR 组件仍可在设置中按需更新。",
+                )
+            return
 
         update_cfg = self._cfg.get("update") or {}
         urls = update_cfg.get("manifest_urls") or []

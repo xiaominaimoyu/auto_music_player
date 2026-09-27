@@ -14,6 +14,8 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from core.database import ScoreDB
+from core.app_identity import is_store_package, stable_app_root, store_local_state_dir
+from core.data_migration import migrate_store_data
 from core.event_logger import configure_event_logger
 from core.event_player import EventPlayer
 from core.humanize import HumanizeParams
@@ -76,12 +78,24 @@ def app_icon():
 
 
 def ensure_config() -> str:
-    """切到数据目录并保证 config.yaml 可用。
+    """保证 config.yaml 可用，并避免 Store 包目录写入。
 
-    exe 运行:数据落在 exe 旁边;exe 旁没有 config.yaml 时,
-    自动释放打包时内嵌的默认配置,保证单文件可运行。
+    便携 exe 延续原有“exe 旁配置”兼容行为。Store/MSIX 包安装目录只读，
+    因此将可写配置放入 LocalState；包内默认配置仍通过 ``_MEIPASS`` 读取。
     """
     if getattr(sys, "frozen", False):
+        if is_store_package():
+            state_dir = store_local_state_dir()
+            os.makedirs(state_dir, exist_ok=True)
+            target = os.path.join(state_dir, "config.yaml")
+            if not os.path.exists(target):
+                bundled = os.path.join(getattr(sys, "_MEIPASS", state_dir), "config.yaml")
+                if not os.path.isfile(bundled):
+                    raise FileNotFoundError(f"缺少 MSIX 内置默认配置: {bundled}")
+                shutil.copyfile(bundled, target)
+            # 只把相对路径解析到用户数据位置；绝不把工作目录设到 WindowsApps。
+            os.chdir(state_dir)
+            return target
         exe_dir = os.path.dirname(sys.executable)
         target = os.path.join(exe_dir, "config.yaml")
         if not os.path.exists(target):
@@ -167,20 +181,28 @@ def _resolve_data_dir(config_path: str, configured_data_dir: str, data_mode="aut
 
     config_path = os.path.abspath(config_path)
     path = os.fspath(configured_data_dir)
-    if os.path.isabs(path):
-        return os.path.abspath(path)
-    config_dir = os.path.dirname(config_path)
     mode = str(data_mode or "auto").strip().lower()
     if mode not in {"auto", "portable", "installed"}:
         raise ValueError("app.data_mode 必须是 auto、portable 或 installed")
+    if is_store_package():
+        # Store 通道不允许通过配置把数据写回只读包目录或任意绝对路径。
+        # 保留相对 data 子目录，确保数据库/来源文件都在 LocalState 内。
+        relative = "data" if os.path.isabs(path) or not path.strip() else path
+        store_root = os.path.abspath(store_local_state_dir())
+        candidate = os.path.abspath(os.path.join(store_root, relative))
+        if os.path.commonpath([store_root, candidate]) != store_root:
+            raise ValueError("Store 版 app.data_dir 必须位于 LocalState 内")
+        return candidate
+    if os.path.isabs(path):
+        return os.path.abspath(path)
+    config_dir = os.path.dirname(config_path)
     if mode == "portable" or not getattr(sys, "frozen", False):
         return os.path.abspath(os.path.join(config_dir, path))
     portable_flag = os.path.join(config_dir, "portable.flag")
     legacy_data = os.path.join(config_dir, path)
     if mode == "auto" and (os.path.exists(portable_flag) or os.path.exists(legacy_data)):
         return os.path.abspath(legacy_data)
-    local_root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
-    return os.path.abspath(os.path.join(local_root, "AutoMusicPlayer", path))
+    return os.path.abspath(os.path.join(stable_app_root(), path))
 
 
 def main():
@@ -194,6 +216,10 @@ def main():
         configured_data_dir,
         app_cfg.get("data_mode", "auto"),
     )
+    if is_store_package():
+        migration = migrate_store_data(data_dir)
+        if migration.status == "error":
+            print(f"Store 数据迁移失败，将保留现有数据并继续启动: {migration.error}", file=sys.stderr)
     ensure_omr_components(data_dir)
     player_cfg = cfg.get("player", {})
     db = ScoreDB(os.path.join(data_dir, app_cfg.get("db_file", "scores.db")))
@@ -204,6 +230,7 @@ def main():
     if (
         getattr(sys, "frozen", False)
         and app_cfg.get("data_mode", "auto") != "installed"
+        and not is_store_package()
         and os.path.isdir(legacy_profiles)
     ):
         # 兼容旧便携版把用户档位放在 exe/profiles 的布局。
@@ -258,13 +285,14 @@ def main():
     atexit.register(event_player.shutdown)
     atexit.register(db.close)
 
-    # Windows 任务栏分组图标:显式 AppUserModelID 让任务栏显示自定义图标而非 Python 默认图标
-    try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "AutoMusicPlayer.App"
-        )
-    except Exception:
-        pass
+    # MSIX 由包身份管理 AUMID；便携版保留显式任务栏分组标识。
+    if not is_store_package():
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "AutoMusicPlayer.App"
+            )
+        except Exception:
+            pass
 
     app = QApplication(sys.argv)
     # 显式声明高 DPI 缩放策略:125%/150% 等缩放下按逻辑像素平滑渲染,避免打包环境差异

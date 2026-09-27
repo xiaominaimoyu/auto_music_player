@@ -8,6 +8,7 @@ param(
 
     [string]$NodeExecutable = (Get-Command node.exe -ErrorAction Stop).Source,
     [string]$OutputDirectory = (Join-Path (Resolve-Path 'dist') 'omr-components'),
+    [string]$AudiverisLicensePath,
     [string]$JianpuLicensePath,
     [string]$SmokeTestInput,
     [switch]$RunSmokeTest
@@ -16,6 +17,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $expectedNodeHash = '58e74bf02fc5bbacc41dcb8bef089961cd5bddd37830b87784e4fc624d145d1f'
 $expectedJianpuPackageHash = '1025e8757c8a77362f84c5ecc26750719f180817360fb8b91640c13f68e9c2c8'
+$audiverisLicenseUrl = 'https://raw.githubusercontent.com/Audiveris/audiveris/5.11.0/LICENSE'
+$audiverisSourceOffer = 'https://github.com/Audiveris/audiveris/tree/5.11.0'
+$audiverisDistribution = 'https://github.com/Audiveris/audiveris/releases/download/5.11.0/Audiveris-5.11.0-windowsConsole-x86_64.msi'
+$audiverisMsiSha256 = '5f1b4e96a12c53c7da426814b76e599363c4181e291855996e0a6878dda95f71'
 
 function Require-File([string]$Path, [string]$Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -64,10 +69,25 @@ Copy-Item -Path (Join-Path $sourceAudiveris '*') -Destination $stageAudiveris -R
 Copy-Item -Path (Join-Path $sourceJianpu '*') -Destination $stageJianpu -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $templateRoot 'amp_adapter.mjs'), (Join-Path $templateRoot 'amp_worker.mjs'), (Join-Path $templateRoot 'jianpu_omr.cmd'), (Join-Path $templateRoot 'README.md') -Destination $stageJianpu -Force
 Copy-Item -LiteralPath $nodePath -Destination (Join-Path $stageJianpu 'node.exe') -Force
+$audiverisLicenseDir = Join-Path $stageAudiveris 'licenses'
+New-Item -ItemType Directory -Force -Path $audiverisLicenseDir | Out-Null
+if ($AudiverisLicensePath) {
+    Copy-Item -LiteralPath (Require-File $AudiverisLicensePath 'Audiveris license') -Destination (Join-Path $audiverisLicenseDir 'Audiveris-LICENSE') -Force
+} else {
+    Invoke-WebRequest -Uri $audiverisLicenseUrl -OutFile (Join-Path $audiverisLicenseDir 'Audiveris-LICENSE')
+}
+@"
+Audiveris 5.11.0 source offer
+License: GNU Affero General Public License v3.0 (AGPL-3.0)
+Source: $audiverisSourceOffer
+Original distribution: $audiverisDistribution
+Recorded original MSI SHA-256: $audiverisMsiSha256
+"@ | Set-Content -LiteralPath (Join-Path $audiverisLicenseDir 'source-offer.txt') -Encoding utf8
+Copy-Item -LiteralPath (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') -Destination (Join-Path $audiverisLicenseDir 'AutoMusicPlayer-THIRD_PARTY_NOTICES.md') -Force
 $componentManifest = [ordered]@{
     schema_version = 1
     managed_by_app = $true
-    component = [ordered]@{ id = 'audiveris-staff'; version = '5.11.0'; upstream = 'https://github.com/Audiveris/audiveris/releases/tag/5.11.0' }
+    component = [ordered]@{ id = 'audiveris-staff'; version = '5.11.0'; license = 'AGPL-3.0'; upstream = 'https://github.com/Audiveris/audiveris/releases/tag/5.11.0'; source_offer = $audiverisSourceOffer }
 }
 $componentManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stageAudiveris 'component.json') -Encoding utf8
 $componentManifest = [ordered]@{
@@ -125,6 +145,8 @@ $catalog = [ordered]@{
             sha256 = (Get-FileHash -LiteralPath $audiverisZip -Algorithm SHA256).Hash.ToLowerInvariant()
             license = 'AGPL-3.0'
             upstream = 'https://github.com/Audiveris/audiveris/releases/tag/5.11.0'
+            license_file = 'licenses/Audiveris-LICENSE'
+            source_offer = $audiverisSourceOffer
             supports = @('printed-staff')
         },
         [ordered]@{

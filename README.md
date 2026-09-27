@@ -23,6 +23,14 @@
   - **默认档位**(鸣潮 / 原神):21 键三行键盘模型,支持和弦
   - **三角洲行动 · 守夜人口琴**:7 音位 + 修饰键模型,不支持和弦(自动降级并统计)
 
+## Windows 分发通道
+
+- **GitHub/Gitee 便携版**:继续使用签名 manifest 的提示式更新，主程序 EXE 仍保持独立便携分发。
+- **Microsoft Store MSIX 版**:首版只提供 x64 主程序，由 Store 管理安装和更新；配置、SQLite 乐谱库、原始来源和档案写入包身份对应的 `LocalState`，首次启动会复制旧安装版数据且不会删除来源。
+- **离线 OMR**:Audiveris/Jianpu 不随基础 Store 包强制安装，用户主动选择后按需下载、校验 SHA-256 并查看许可证；识别结果仍须人工确认后入库。
+
+MSIX 打包模板和构建说明见 [`store/README.md`](store/README.md)。Store 提交由 Microsoft 重新签名；本地 sideload 测试需要开发证书，证书私钥不得进入仓库。
+
 ## v1.2 新特性
 
 ### 三角洲行动口琴完整支持

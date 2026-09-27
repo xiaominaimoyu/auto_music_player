@@ -30,6 +30,28 @@ EXCLUDES = [
     "tkinter", "pydoc_data",
 ]
 
+# Windows App Certification Kit checks the executable's embedded manifest for
+# DPI awareness.  Qt's runtime scaling policy in main.py is still useful, but
+# it does not replace this native declaration.  Keep the legacy dpiAware value
+# as a fallback for older Windows versions and prefer PerMonitorV2 on newer
+# systems without requesting elevation.
+WINDOWS_MANIFEST = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>'''
+
 OPTIONAL_DATAS = []
 OMR_BUNDLE_SOURCE = os.environ.get("AUTOMUSIC_OMR_BUNDLE_DIR", "").strip()
 if OMR_BUNDLE_SOURCE and os.path.isdir(OMR_BUNDLE_SOURCE):
@@ -112,6 +134,7 @@ exe = EXE(
     [],
     name="AutoMusicPlayer",
     icon="app.ico",
+    manifest=WINDOWS_MANIFEST,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

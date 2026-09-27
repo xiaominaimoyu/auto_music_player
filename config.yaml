@@ -5,6 +5,7 @@ app:
   db_file: scores.db
   # auto:新安装版使用 %LOCALAPPDATA%,已有 exe 旁 data 或 portable.flag 保持便携；
   # portable:始终使用 exe 旁 data；installed:始终使用 %LOCALAPPDATA%。
+  # Microsoft Store MSIX 通道会强制使用包身份对应的 LocalState，避免写入只读安装目录。
   data_mode: auto
   # 当前激活的游戏档位(profiles/ 目录下的档位 id)
   # 切换档位即切换输入模型;鸣潮/原神 与 三角洲行动 分属不同分区,互不影响
