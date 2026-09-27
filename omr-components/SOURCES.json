@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "id": "audiveris-staff",
+      "version": "5.11.0",
+      "distribution": "https://github.com/Audiveris/audiveris/releases/download/5.11.0/Audiveris-5.11.0-windowsConsole-x86_64.msi",
+      "size": 85062430,
+      "sha256": "5f1b4e96a12c53c7da426814b76e599363c4181e291855996e0a6878dda95f71",
+      "license": "AGPL-3.0",
+      "input": ["printed-staff"],
+      "authenticode": "not-signed-in-local-verification"
+    },
+    {
+      "id": "jpeditor-jianpu",
+      "version": "0.7.6",
+      "distribution": "https://github.com/lodebar2026/jpeditor/tree/v0.7.6",
+      "worker_archive_sha256": "1025e8757c8a77362f84c5ecc26750719f180817360fb8b91640c13f68e9c2c8",
+      "license": "MIT-plus-dependency-notices",
+      "input": ["printed-jianpu-bitmap", "handwritten-experimental"],
+      "node_runtime": {
+        "version": "24.14.1",
+        "distribution": "https://nodejs.org/dist/v24.14.1/node-v24.14.1-win-x64.zip",
+        "node_exe_sha256": "58e74bf02fc5bbacc41dcb8bef089961cd5bddd37830b87784e4fc624d145d1f"
+      },
+      "manual_confirmation_required": true
+    }
+  ]
+}

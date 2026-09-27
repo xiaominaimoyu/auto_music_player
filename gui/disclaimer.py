@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.theme import INK, LINE_2, STATE_ERROR, SURFACE, SURFACE_2
+from core.version import APP_VERSION
 
 # ---------- 文案(统一常量组:唯一存放处) ----------
 DISCLAIMER_TITLE = "⚠️ 风险警示"
@@ -32,8 +33,8 @@ DISCLAIMER_OPEN_SOURCE = (
 )
 DISCLAIMER_TUTORIAL_TITLE = "简单使用教程"
 DISCLAIMER_TUTORIAL = (
-    "1. 在「上传识别」页复制提示词，交给外部 AI 工具并附上乐谱图片。\n"
-    "2. 将 AI 返回的简谱粘贴回来，点击「解析到校对表格」。\n"
+    "1. 在「乐谱库」导入文本 PDF/DOCX、MusicXML/MXL 或图片；也可在「上传识别」页粘贴已有简谱。\n"
+    "2. 图片/文档/OMR 结果会先进入校对表格；没有离线组件时程序会明确提示，不会调用外部大模型 API。\n"
     "3. 仔细校对音符、时值、半音和休止符，确认无误后保存到乐谱库。\n"
     "4. 在「演奏控制」页先点击「试听当前乐谱」确认旋律；试听只使用电脑扬声器，不会向游戏发送按键。\n"
     "5. 确认后再点击「开始演奏」，在倒计时内切回游戏；演奏中可按 F8 暂停。"
@@ -43,8 +44,8 @@ BTN_QUIT_TEXT = "退出程序"
 SKIP_CHECKBOX_TEXT = "下次启动不再弹出此提示"
 COUNTDOWN_SECONDS = 3
 # 按发布版本隔离“下次不再弹出”选择。旧版本曾使用未带版本号的键，
-# 若直接复用会让升级到 v1.4.2 的用户被旧设置静默跳过启动风险提示。
-DISCLAIMER_SKIP_KEY = "disclaimer/skip_on_next_start/v1.4.2"
+# 升级后由统一版本源生成新的提示键。
+DISCLAIMER_SKIP_KEY = f"disclaimer/skip_on_next_start/v{APP_VERSION}"
 _SETTINGS_ORGANIZATION = "AutoMusicPlayer"
 _SETTINGS_APPLICATION = "AutoMusicPlayer"
 

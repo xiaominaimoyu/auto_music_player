@@ -6,6 +6,7 @@
 # 打包: python -m PyInstaller --noconfirm --clean AutoMusicPlayer.spec
 
 import fnmatch
+import os
 
 EXCLUDES = [
     # PyQt6 未使用的子模块
@@ -20,15 +21,27 @@ EXCLUDES = [
     "PyQt6.QtTextToSpeech", "PyQt6.QtWebSockets", "PyQt6.QtRemoteObjects",
     "PyQt6.QtScxml", "PyQt6.QtStateMachine", "PyQt6.QtJsonRpc",
     "PyQt6.QtHttpServer", "PyQt6.QtGraphs", "PyQt6.QtGrpc",
-    # 不再使用的库
-    "docx", "lxml",
+    # 文本型 PDF/DOCX 离线导入使用 pypdf/python-docx；不再排除 docx/lxml。
     # 在线大模型识别已移除,requests/Pillow 不再需要
     "requests", "PIL",
     # 环境里其他包注册的 hook 拽进来的无关依赖(mitmproxy hook 引入)
-    "numpy", "cryptography", "mitmproxy",
+    "numpy", "mitmproxy",
     # 标准库中用不到的大件
     "tkinter", "pydoc_data",
 ]
+
+OPTIONAL_DATAS = []
+OMR_BUNDLE_SOURCE = os.environ.get("AUTOMUSIC_OMR_BUNDLE_DIR", "").strip()
+if OMR_BUNDLE_SOURCE and os.path.isdir(OMR_BUNDLE_SOURCE):
+    # 发布构建可把 Audiveris/jianpu-omr 放入此目录；基础 EXE 没有时仍可构建。
+    component_bytes = sum(
+        os.path.getsize(os.path.join(root, name))
+        for root, _dirs, files in os.walk(OMR_BUNDLE_SOURCE)
+        for name in files
+    )
+    if component_bytes > 500 * 1024 * 1024:
+        raise SystemExit("离线 OMR 组件总大小不能超过 500 MB")
+    OPTIONAL_DATAS.append((OMR_BUNDLE_SOURCE, "omr"))
 
 
 def _keep(entry_name: str) -> bool:
@@ -69,8 +82,16 @@ a = Analysis(
         ("app.ico", "."),
         ("profiles", "profiles"),
         ("THIRD_PARTY_NOTICES.md", "."),
+        ("version.txt", "."),
+    ] + OPTIONAL_DATAS,
+    hiddenimports=[
+        "pynput",
+        "mido",
+        "pypdf",
+        "docx",
+        "docx.oxml",
+        "cryptography",
     ],
-    hiddenimports=["pynput", "mido"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

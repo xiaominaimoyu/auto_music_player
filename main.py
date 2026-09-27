@@ -2,9 +2,11 @@
 
 import atexit
 import ctypes
+import json
 import os
 import shutil
 import sys
+import time
 
 import yaml
 from PyQt6.QtCore import Qt
@@ -27,7 +29,28 @@ from gui.theme import APP_QSS
 
 def load_config(path="config.yaml") -> dict:
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        user = yaml.safe_load(f) or {}
+    bundled_path = os.path.join(
+        getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))),
+        "config.yaml",
+    )
+    defaults = {}
+    if os.path.isfile(bundled_path) and os.path.abspath(bundled_path) != os.path.abspath(path):
+        try:
+            with open(bundled_path, encoding="utf-8") as f:
+                defaults = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError):
+            defaults = {}
+
+    def merge(base, override):
+        if not isinstance(base, dict) or not isinstance(override, dict):
+            return override if override is not None else base
+        result = dict(base)
+        for key, value in override.items():
+            result[key] = merge(result[key], value) if key in result else value
+        return result
+
+    return merge(defaults, user)
 
 
 def is_admin() -> bool:
@@ -76,13 +99,88 @@ def resource_path(name: str) -> str:
     return os.path.join(base, name)
 
 
+def ensure_omr_components(data_dir: str) -> str:
+    """补充/升级应用管理的组件，不覆盖用户自行安装的同名目录。"""
+
+    target = os.path.join(os.path.abspath(os.fspath(data_dir)), "omr")
+    bundled = resource_path("omr")
+    if os.path.isdir(bundled):
+        os.makedirs(target, exist_ok=True)
+        for name in os.listdir(bundled):
+            source = os.path.join(bundled, name)
+            destination = os.path.join(target, name)
+            if name.lower() == "readme.md":
+                continue
+            if not os.path.exists(destination):
+                if os.path.isdir(source):
+                    shutil.copytree(source, destination)
+                else:
+                    shutil.copy2(source, destination)
+                continue
+            if not os.path.isdir(source) or not os.path.isdir(destination):
+                continue
+            source_manifest = _component_manifest(source)
+            destination_manifest = _component_manifest(destination)
+            if not source_manifest or not source_manifest.get("managed_by_app"):
+                continue
+            if not destination_manifest or not destination_manifest.get("managed_by_app"):
+                # A user may have installed a component at this path manually;
+                # leave it untouched and let the component detector report it.
+                continue
+            source_version = json.dumps(source_manifest.get("component"), sort_keys=True)
+            destination_version = json.dumps(destination_manifest.get("component"), sort_keys=True)
+            if source_version == destination_version:
+                continue
+            staging = f"{destination}.staging-{os.getpid()}"
+            if os.path.exists(staging):
+                shutil.rmtree(staging, ignore_errors=True)
+            shutil.copytree(source, staging)
+            backup = f"{destination}.previous-{int(time.time())}"
+            shutil.move(destination, backup)
+            shutil.move(staging, destination)
+    return target
+
+
+def _component_manifest(path: str):
+    manifest_path = os.path.join(path, "component.json")
+    try:
+        with open(manifest_path, encoding="utf-8-sig") as stream:
+            value = json.load(stream)
+    except (OSError, ValueError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def resolve_data_dir(config_path: str, configured_data_dir: str) -> str:
-    """相对 data_dir 始终按配置文件位置解析，与启动 cwd/权限无关。"""
+    """向后兼容地解析便携/安装双模式数据根。
+
+    未显式传入 ``data_mode`` 时保留旧行为，便于现有测试和开发环境使用。
+    frozen + auto 模式会优先保留已有 exe 旁 data，新的安装版则使用
+    ``%LOCALAPPDATA%\\AutoMusicPlayer``，更新程序不会覆盖用户数据。
+    """
+
+    return _resolve_data_dir(config_path, configured_data_dir)
+
+
+def _resolve_data_dir(config_path: str, configured_data_dir: str, data_mode="auto") -> str:
+    """内部实现；``resolve_data_dir`` 保留原有两参数 API。"""
+
     config_path = os.path.abspath(config_path)
     path = os.fspath(configured_data_dir)
-    if not os.path.isabs(path):
-        path = os.path.join(os.path.dirname(config_path), path)
-    return os.path.abspath(path)
+    if os.path.isabs(path):
+        return os.path.abspath(path)
+    config_dir = os.path.dirname(config_path)
+    mode = str(data_mode or "auto").strip().lower()
+    if mode not in {"auto", "portable", "installed"}:
+        raise ValueError("app.data_mode 必须是 auto、portable 或 installed")
+    if mode == "portable" or not getattr(sys, "frozen", False):
+        return os.path.abspath(os.path.join(config_dir, path))
+    portable_flag = os.path.join(config_dir, "portable.flag")
+    legacy_data = os.path.join(config_dir, path)
+    if mode == "auto" and (os.path.exists(portable_flag) or os.path.exists(legacy_data)):
+        return os.path.abspath(legacy_data)
+    local_root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    return os.path.abspath(os.path.join(local_root, "AutoMusicPlayer", path))
 
 
 def main():
@@ -91,12 +189,29 @@ def main():
     cfg = load_config(config_path)
     app_cfg = cfg.get("app", {})
     configured_data_dir = app_cfg.get("data_dir", "data")
-    data_dir = resolve_data_dir(config_path, configured_data_dir)
+    data_dir = _resolve_data_dir(
+        config_path,
+        configured_data_dir,
+        app_cfg.get("data_mode", "auto"),
+    )
+    ensure_omr_components(data_dir)
     player_cfg = cfg.get("player", {})
     db = ScoreDB(os.path.join(data_dir, app_cfg.get("db_file", "scores.db")))
     keymap = KeyMap(cfg["keymap"])
     # 游戏档位:profiles/ 目录优先,缺失时用 config.yaml 的 keymap 合成默认档位
-    profiles = load_profiles(ensure_profiles("."), fallback_keymap=cfg.get("keymap"))
+    profile_base = data_dir if getattr(sys, "frozen", False) else "."
+    legacy_profiles = os.path.join(os.path.dirname(config_path), "profiles")
+    if (
+        getattr(sys, "frozen", False)
+        and app_cfg.get("data_mode", "auto") != "installed"
+        and os.path.isdir(legacy_profiles)
+    ):
+        # 兼容旧便携版把用户档位放在 exe/profiles 的布局。
+        profile_base = os.path.dirname(config_path)
+    profiles = load_profiles(
+        ensure_profiles(profile_base),
+        fallback_keymap=cfg.get("keymap"),
+    )
     profile = resolve_profile(profiles, app_cfg.get("active_profile"))
     # 修饰键与音键的间隔:配置缺失时回落到驱动默认值
     driver = KeyboardDriver(
@@ -115,8 +230,9 @@ def main():
     humanize_params = None
     if humanize_enabled:
         humanize_params = HumanizeParams(
-            jitter_ms=float(humanize_cfg.get("jitter_ms", 8.0)),
-            breath_ms=float(humanize_cfg.get("breath_ms", 18.0)),
+            jitter_ms=float(humanize_cfg.get("jitter_ms", 12.0)),
+            breath_ms=float(humanize_cfg.get("breath_ms", 25.0)),
+            jitter_correlation=float(humanize_cfg.get("jitter_correlation", 0.65)),
             # 保持默认值,不在 config 暴露过多旋钮
         )
     # 两条播放路径共用同一个事件日志目录/会话格式，记录页才能同时看到
@@ -140,6 +256,7 @@ def main():
     # 进程退出兜底:任何退出路径(atexit)都停止演奏并释放全部按键,防止键卡死
     atexit.register(player.shutdown)
     atexit.register(event_player.shutdown)
+    atexit.register(db.close)
 
     # Windows 任务栏分组图标:显式 AppUserModelID 让任务栏显示自定义图标而非 Python 默认图标
     try:

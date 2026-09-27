@@ -1,6 +1,11 @@
+config_version: 2
+
 app:
   data_dir: data
   db_file: scores.db
+  # auto:新安装版使用 %LOCALAPPDATA%,已有 exe 旁 data 或 portable.flag 保持便携；
+  # portable:始终使用 exe 旁 data；installed:始终使用 %LOCALAPPDATA%。
+  data_mode: auto
   # 当前激活的游戏档位(profiles/ 目录下的档位 id)
   # 切换档位即切换输入模型;鸣潮/原神 与 三角洲行动 分属不同分区,互不影响
   # 可选值见 profiles/*.yaml;填错或缺失时回落到 default
@@ -13,6 +18,15 @@ keymap:
   mid: [A, S, D, F, G, H, J]
   # 低音 1-7
   low: [Z, X, C, V, B, N, M]
+
+update:
+  # 第一阶段只检查并提示，不自动下载或替换 EXE。
+  enabled: true
+  manifest_urls:
+    - https://gitee.com/muming04yue/auto_music_player/raw/main/updates/stable.json
+    - https://raw.githubusercontent.com/xiaominaimoyu/auto_music_player/main/updates/stable.json
+  public_key: "6QF3M1S8xGQslxyJc2RLlCm8xy0HTRYXZvXk6RgMInY="
+  check_interval_hours: 24
 
 player:
   # 默认演奏速度(拍/分钟,四分音符为一拍)
@@ -41,6 +55,8 @@ player:
     # 乐句边界(长音或休止之后)追加的呼吸停顿(毫秒)
     # 已优化:18→25ms,换气感更明显
     breath_ms: 25
+    # 乐句内起音偏移的相关系数，避免独立白噪声式抖动
+    jitter_correlation: 0.65
   # 目标窗口焦点检测:演奏中失去目标窗口焦点时自动暂停(断点保留,可续播)
   focus_check:
     # 是否启用

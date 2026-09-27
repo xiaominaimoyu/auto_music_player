@@ -86,6 +86,8 @@ class CompileParams:
     # 单音按住上限(毫秒);None 表示不限制
     max_hold_ms: float | None = 3000.0
     gap_ms: float = 0.0
+    # 真人化计划的最小键间隔。旧调用未传入时保持 1ms 的安全下限。
+    min_gap_ms: float = 1.0
     # 物理直达键覆盖表,如 {"high_1": ","};命中后不再按修饰键(决策 D3)
     pitch_direct_overrides: dict = field(default_factory=dict)
     modifier_policy: ModifierPolicy = ModifierPolicy.OCTAVE_FIRST
@@ -100,7 +102,7 @@ class CompileParams:
             raise ValueError(f"hold_ratio 必须在 (0, 1]: {self.hold_ratio}")
         if self.max_hold_ms is not None and float(self.max_hold_ms) <= 0:
             raise ValueError(f"max_hold_ms 必须为正数或 None: {self.max_hold_ms}")
-        for k in ("settle_ms", "release_settle_ms", "gap_ms"):
+        for k in ("settle_ms", "release_settle_ms", "gap_ms", "min_gap_ms"):
             if float(getattr(self, k)) < 0:
                 raise ValueError(f"{k} 不能为负数: {getattr(self, k)}")
 
@@ -273,7 +275,7 @@ def compile_score(elements, params: CompileParams, timings=None, *, source_index
         # 链式防叠键:仅真人化模式需要——偏移可能把起音提前到上一音释放之前;
         # 机械模式下 cursor 已保证 t ≥ 上一音释放,保持精确时序不变
         if timings is not None and prev_kb_up is not None:
-            t = max(t, prev_kb_up + 1.0)
+            t = max(t, prev_kb_up + float(params.min_gap_ms))
 
         nxt = plan[i + 1] if i + 1 < len(plan) else None
         source_end = nxt is None or nxt["source_index"] != item["source_index"]

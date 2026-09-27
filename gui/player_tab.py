@@ -3,8 +3,8 @@
 三态控制:开始(或暂停后"继续演奏") / 停止(= 暂停,进度保留) / 重置(仅停止后可用,进度归零)。
 """
 
-import random
 import threading
+from dataclasses import replace
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 from core import ir as ir_mod
 from core.compiler import compile_score
 from core.event_logger import get_event_logger
-from core.humanize import HumanizeParams, plan_timings
+from core.humanize import HumanizeParams, make_seed, plan_timings
 from core.practice import PracticeSession, build_dual_rail_hint, build_practice_cues
 from core.preview_player import PreviewPlayer
 from core.profile import resolve_profile
@@ -68,6 +68,7 @@ def build_event_plan(
     hold_ratio,
     gap_ms,
     humanize=None,
+    humanize_seed=None,
     source_index_offset=0,
 ):
     """事件路径(三角洲档位):谱面 → (ScenarioPlan, 降级清单)。
@@ -91,7 +92,8 @@ def build_event_plan(
     params = scenario.apply_intervals(params)
     timings = None
     if humanize is not None and scenario.humanize:
-        timings = plan_timings(notes, humanize, random.Random())
+        params = replace(params, min_gap_ms=humanize.min_gap_ms)
+        timings = plan_timings(notes, humanize, seed=humanize_seed)
     result = compile_score(
         elements,
         params,
@@ -174,6 +176,7 @@ class PlayerTab(QWidget):
             self._humanize_params = HumanizeParams(
                 jitter_ms=float(humanize_cfg.get("jitter_ms", 12.0)),
                 breath_ms=float(humanize_cfg.get("breath_ms", 25.0)),
+                jitter_correlation=float(humanize_cfg.get("jitter_correlation", 0.65)),
             )
         self._score_id = None
         self._had_error = False
@@ -188,6 +191,7 @@ class PlayerTab(QWidget):
         self._active_source_type = ""
         self._playback_gap_ms = self._gap_ms
         self._playback_humanize = self._humanize_params
+        self._humanize_seed = None
         self._practice_active = False
         self._practice_notes = []
         self._practice_index = 0
@@ -1018,6 +1022,7 @@ class PlayerTab(QWidget):
         self._paused_done = 0
         self._paused_total = 0
         self._event_degradation_count = 0
+        self._humanize_seed = None
         self.play_btn.setText("开始练习" if self._practice_mode() else "开始演奏")
         self.reset_btn.setEnabled(False)
 
@@ -1140,6 +1145,15 @@ class PlayerTab(QWidget):
         # 对短音密集歌曲造成明显改拍。导入谱演奏时保持原始时间线。
         self._playback_gap_ms = 0.0 if imported_timeline else self._gap_ms
         self._playback_humanize = None if imported_timeline else self._humanize_params
+        start_index = self._paused_done if self._paused_done > 0 else 0
+        if start_index > 0:
+            # 暂停续播沿用原会话 seed，保证 Legacy/Delta 不重新掷骰子。
+            if self._humanize_seed is None and self._playback_humanize is not None:
+                self._humanize_seed = make_seed()
+        elif self._playback_humanize is not None:
+            self._humanize_seed = make_seed()
+        else:
+            self._humanize_seed = None
         self._transport_degradations = list(prepared.degradations)
         self._transport_degradation_count = len(prepared.degradations)
         if not self._use_event_path():
@@ -1148,7 +1162,6 @@ class PlayerTab(QWidget):
             )
             if legacy_semitones:
                 self._transport_degradation_count += legacy_semitones
-        start_index = self._paused_done if self._paused_done > 0 else 0
         if self._practice_mode():
             self._start_practice(
                 {"notes": prepared.notes, "name": score["name"]}, start_index
@@ -1267,6 +1280,7 @@ class PlayerTab(QWidget):
             hold_ratio=self._hold_ratio,
             gap_ms=self._playback_gap_ms,
             humanize=self._playback_humanize,
+            humanize_seed=self._humanize_seed,
             source_index_offset=start_index,
         )
         self._event_degradation_count = len(degradations)
@@ -1285,6 +1299,7 @@ class PlayerTab(QWidget):
                 "source_type": self._active_source_type,
                 "gap_ms": self._playback_gap_ms,
                 "humanize_enabled": self._playback_humanize is not None,
+                "humanize_seed": self._humanize_seed,
                 "degradation_count": (
                     len(degradations) + self._transport_degradation_count
                 ),
@@ -1358,11 +1373,14 @@ class PlayerTab(QWidget):
                 start_index=start_index,
                 score_name=score_name,
                 humanize_override=self._playback_humanize,
+                humanize_seed=self._humanize_seed,
                 trace_context={
                     "path_type": "legacy",
                     "profile_id": getattr(self._profile, "id", "default"),
                     "profile_name": getattr(self._profile, "name", "默认"),
                     "source_type": self._active_source_type,
+                    "humanize_enabled": self._playback_humanize is not None,
+                    "humanize_seed": self._humanize_seed,
                     "transport_degradation_count": self._transport_degradation_count,
                 },
             )

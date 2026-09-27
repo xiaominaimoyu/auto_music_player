@@ -32,6 +32,8 @@ class MidiSourceError(ValueError):
 class MidiReadResult:
     song: SourceSong
     warnings: list[str] = field(default_factory=list)
+    # 不参与游戏投影的完整来源信息，供 sidecar 和后续重新适配使用。
+    source_metadata: dict = field(default_factory=dict)
 
 
 def _decode_track_name(name: str) -> str:
@@ -113,8 +115,12 @@ def read_midi_source(path: str | Path) -> MidiReadResult:
         raise MidiSourceError("暂不支持 SMPTE 时基 MIDI，请转换为标准 PPQ 时基")
 
     tempos = []
+    time_signatures = []
+    control_changes = []
+    other_events = []
     note_events = []
     tracks = {}
+    track_end_ticks = {}
     last_tick = 0
     event_count = 0
     percussion_count = 0
@@ -137,13 +143,63 @@ def read_midi_source(path: str | Path) -> MidiReadResult:
                 if message.tempo <= 0:
                     raise MidiSourceError("MIDI 中包含无效速度事件")
                 tempos.append((tick, order, int(message.tempo)))
+            elif message.type == "time_signature":
+                time_signatures.append(
+                    {
+                        "tick": tick,
+                        "track": track_index,
+                        "numerator": int(message.numerator),
+                        "denominator": int(message.denominator),
+                        "clocks_per_click": int(message.clocks_per_click),
+                        "notated_32nd_notes_per_beat": int(
+                            message.notated_32nd_notes_per_beat
+                        ),
+                    }
+                )
+            elif message.type == "control_change":
+                control_changes.append(
+                    {
+                        "tick": tick,
+                        "track": track_index,
+                        "channel": int(message.channel),
+                        "control": int(message.control),
+                        "value": int(message.value),
+                    }
+                )
             elif message.type in ("note_on", "note_off"):
                 if message.channel == 9:
                     if message.type == "note_on" and message.velocity > 0:
                         percussion_count += 1
-                else:
-                    note_events.append((tick, order, track_index, message))
+                note_events.append(
+                    (
+                        tick,
+                        order,
+                        track_index,
+                        int(message.channel),
+                        message.type,
+                        int(message.note),
+                        int(message.velocity),
+                        int(message.channel) == 9,
+                    )
+                )
+            elif message.type in (
+                "program_change",
+                "pitchwheel",
+                "aftertouch",
+                "polytouch",
+            ):
+                payload = {
+                    "tick": tick,
+                    "track": track_index,
+                    "channel": int(message.channel),
+                    "type": message.type,
+                }
+                for key in ("program", "pitch", "value", "note"):
+                    if hasattr(message, key):
+                        payload[key] = int(getattr(message, key))
+                other_events.append(payload)
         tracks[track_index] = track_name
+        track_end_ticks[track_index] = tick
         last_tick = max(last_tick, tick)
 
     seconds = _build_tick_converter(tempos, midi.ticks_per_beat)
@@ -153,36 +209,86 @@ def read_midi_source(path: str | Path) -> MidiReadResult:
 
     active = defaultdict(deque)
     notes = []
+    note_records = []
     unclosed_count = 0
-    for tick, _order, track_index, message in sorted(note_events):
-        key = (track_index, message.channel, message.note)
-        if message.type == "note_on" and message.velocity > 0:
-            active[key].append(tick)
+    for tick, _order, track_index, channel, message_type, pitch, velocity, percussion in sorted(note_events):
+        key = (track_index, channel, pitch)
+        if message_type == "note_on" and velocity > 0:
+            active[key].append({"start_tick": tick, "velocity": velocity, "percussion": percussion})
         elif active[key]:
-            start_tick = active[key].popleft()
+            started = active[key].popleft()
+            start_tick = int(started["start_tick"])
             if tick > start_tick:
-                notes.append(
-                    SourceNote(
-                        seconds(start_tick),
-                        seconds(tick),
-                        int(message.note),
-                        track_index,
-                    )
+                note_records.append(
+                    {
+                        "track": track_index,
+                        "channel": channel,
+                        "pitch": pitch,
+                        "velocity": int(started["velocity"]),
+                        "start_tick": start_tick,
+                        "end_tick": int(tick),
+                        "percussion": bool(started["percussion"]),
+                    }
                 )
 
-    for (track_index, _channel, pitch), starts in active.items():
+    for (track_index, channel, pitch), starts in active.items():
         for start_tick in starts:
-            closing_tick = max(last_tick, start_tick + midi.ticks_per_beat)
-            notes.append(
-                SourceNote(
-                    seconds(start_tick),
-                    seconds(closing_tick),
-                    int(pitch),
-                    track_index,
-                )
+            start_value = int(start_tick["start_tick"])
+            closing_tick = max(
+                int(track_end_ticks.get(track_index, last_tick)),
+                start_value + midi.ticks_per_beat,
+            )
+            note_records.append(
+                {
+                    "track": track_index,
+                    "channel": channel,
+                    "pitch": int(pitch),
+                    "velocity": int(start_tick["velocity"]),
+                    "start_tick": start_value,
+                    "end_tick": closing_tick,
+                    "percussion": bool(start_tick["percussion"]),
+                    "unclosed": True,
+                }
             )
             duration_s = max(duration_s, seconds(closing_tick))
             unclosed_count += 1
+
+    # CC64 会把实际发声结束时间推迟到踏板抬起；游戏投影仍使用 key end，
+    # sidecar 同时保留两者，后续 MIDI 预览可以按 sounding_end 重建。
+    pedal_intervals = defaultdict(list)
+    pedal_down = {}
+    for event in sorted(control_changes, key=lambda item: (item["tick"], item["track"], item["channel"])):
+        if event["control"] != 64:
+            continue
+        key = (event["track"], event["channel"])
+        if event["value"] >= 64:
+            pedal_down.setdefault(key, event["tick"])
+        elif key in pedal_down:
+            pedal_intervals[key].append((pedal_down.pop(key), event["tick"]))
+    for key, start_tick in pedal_down.items():
+        pedal_intervals[key].append((start_tick, track_end_ticks.get(key[0], last_tick)))
+
+    for record in note_records:
+        key_end = int(record["end_tick"])
+        sounding_end = key_end
+        for pedal_start, pedal_end in pedal_intervals.get(
+            (record["track"], record["channel"]), ()
+        ):
+            if pedal_start <= key_end <= pedal_end:
+                sounding_end = max(sounding_end, int(pedal_end))
+        record["start_s"] = seconds(int(record["start_tick"]))
+        record["key_end_s"] = seconds(key_end)
+        record["sounding_end_tick"] = sounding_end
+        record["sounding_end_s"] = seconds(sounding_end)
+        if not record["percussion"]:
+            notes.append(
+                SourceNote(
+                    record["start_s"],
+                    record["key_end_s"],
+                    int(record["pitch"]),
+                    int(record["track"]),
+                )
+            )
 
     if len(notes) > MAX_MIDI_NOTES:
         raise MidiSourceError("MIDI 旋律音符超过 30000 个，请先精简")
@@ -192,16 +298,40 @@ def read_midi_source(path: str | Path) -> MidiReadResult:
         warnings.append(f"已忽略 {percussion_count} 个打击乐音符")
     if unclosed_count:
         warnings.append(f"{unclosed_count} 个未结束音符已按轨道结尾闭合")
+    pedal_count = sum(1 for event in control_changes if event["control"] == 64)
+    if pedal_count:
+        warnings.append(f"已保留 {pedal_count} 个 CC64 踏板事件到来源 sidecar")
+    if time_signatures:
+        warnings.append(f"已保留 {len(time_signatures)} 个拍号事件到来源 sidecar")
 
     used_tracks = {note.track for note in notes}
     used_track_names = {index: name for index, name in tracks.items() if index in used_tracks}
     real_tempos = sorted(tempos, key=lambda item: (item[0], item[1]))
-    first_tempo = real_tempos[0][2] if real_tempos else 500_000
+    tick_zero_tempos = [item for item in real_tempos if item[0] == 0]
+    first_tempo = (tick_zero_tempos[-1][2] if tick_zero_tempos else 500_000)
     raw_bpm = round(60_000_000 / first_tempo)
     bpm_hint = min(MAX_BPM, max(MIN_BPM, raw_bpm))
     if bpm_hint != raw_bpm:
         warnings.append(f"MIDI 速度 {raw_bpm} BPM 超出支持范围，已调整为 {bpm_hint}")
     tempo_change_count = max(1, len({(tick, tempo) for tick, _order, tempo in real_tempos}))
+
+    source_metadata = {
+        "schema_version": 1,
+        "format": "midi-source",
+        "ticks_per_beat": int(midi.ticks_per_beat),
+        "duration_ticks": int(last_tick),
+        "duration_s": float(duration_s),
+        "tracks": {str(index): name for index, name in tracks.items()},
+        "track_end_ticks": {str(index): int(value) for index, value in track_end_ticks.items()},
+        "tempo_events": [
+            {"tick": int(tick), "order": int(order), "tempo_us": int(tempo)}
+            for tick, order, tempo in real_tempos
+        ],
+        "time_signatures": time_signatures,
+        "control_changes": control_changes,
+        "other_events": other_events,
+        "notes": note_records,
+    }
 
     song = SourceSong(
         title=source_path.stem,
@@ -211,4 +341,4 @@ def read_midi_source(path: str | Path) -> MidiReadResult:
         bpm_hint=bpm_hint,
         tempo_change_count=tempo_change_count,
     )
-    return MidiReadResult(song=song, warnings=warnings)
+    return MidiReadResult(song=song, warnings=warnings, source_metadata=source_metadata)

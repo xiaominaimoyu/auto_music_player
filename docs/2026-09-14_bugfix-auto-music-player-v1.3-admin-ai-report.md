@@ -25,7 +25,7 @@ flavor: null
 - Git 基线：标签 `v1.3`，提交 `f2c1e3ff36dcaec8f8dbc84ce3e7cc2dda714142`。
 - 代码范围：桌面端外部 AI 粘贴、简谱解析、Delta 事件编译/播放、事件日志写入与日志页路径。
 - 不在范围：Android、公开乐谱 JSON/数据库 schema 改造、自动修复既有错误谱面、真实游戏进程输入验收、发布上传。
-- 工作区说明：修复开发源目录的 detached HEAD 基于 v1.3，且开始时已有其他未提交修改。发布准备阶段从 v1.3 新建隔离工作树，仅移植本报告列出的修复；原目录的用户修改没有被清理、回退或纳入提交。
+- 工作区说明：当前 detached HEAD 基于 v1.3，但开始时已有其他未提交修改。本修复没有清理、回退、暂存或提交这些用户修改。
 
 ## 3. Evidence → Finding → Path
 
@@ -162,21 +162,20 @@ Delta compiler → EventPlayer（无 logger）→ Driver
 ### 6.3 自动化测试
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py"
-# Ran 365 tests; OK (skipped=2)
-
 python -m pytest -q tests/test_v13_admin_ai_regression.py
 # 12 passed
 
-python tests/smoke_gui.py
-# GUI smoke OK
+$trackedTests = git ls-tree -r --name-only HEAD tests |
+  Where-Object { $_ -like '*.py' -and $_ -notlike '*__init__.py' }
+python -m pytest -q @trackedTests tests/test_v13_admin_ai_regression.py
+# 421 passed, 2 skipped
 
 python -m compileall -q core gui main.py `
   tools/v13_admin_ai_flow_probe.py tools/v13_baseline_admin_repro.py
 # exit 0
 ```
 
-在干净 v1.3 隔离树直接运行 `python -m pytest -q` 会得到 419 passed、2 skipped、4 errors：v1.3 已跟踪的 `tests/test_event_logger_integration.py` 是带参数串联调用的手工集成脚本，pytest 会把 `log_path` / `manager` 误判为缺失 fixture。该脚本不在本次白名单，故没有借发布修复顺手改写；项目原有 unittest 套件、GUI smoke 与本次专项 pytest 均独立通过。
+直接运行 `python -m pytest -q` 会在收集阶段被工作区原有的未跟踪 `tests/test_windows_reliability.py` 阻断：它导入了同属未跟踪草稿、但尚不存在的 `assess_elevation`。本次未修改该组用户文件；v1.3 已跟踪测试清单与本次回归测试均通过。
 
 ### 6.4 历史日志完整性
 
@@ -230,10 +229,10 @@ Start-Process $python -ArgumentList $newArgs -Verb RunAs -Wait
 
 现有 `dist/AutoMusicPlayer.exe` 仍是旧资产：26,490,626 bytes，SHA-256 `8F9A5C688B37095C208E5F327BD0C972F7B21D577D02D83ED84A0F70628D28A7`，Authenticode `NotSigned`。
 
-- [x] 从干净 `v1.3` 基线创建补丁分支，只带入本报告列出的修复文件；已隔离当前工作区其他未提交功能。
-- [x] 将版本号与窗口显示统一更新为 `1.3.1`，未混入当前工作区的其他版本草稿。
-- [x] 运行 12 个专项回归、v1.3 原有 unittest、GUI smoke 和 `compileall`。
-- [x] 在普通令牌和真实 UAC 管理员令牌下分别运行修复探针。
+- [ ] 从干净 `v1.3` 基线创建补丁分支，只带入本报告列出的修复文件；先隔离当前工作区其他未提交功能。
+- [ ] 将版本号、窗口显示、发布说明统一更新为 `1.3.1`，不要混入当前工作区的其他版本草稿。
+- [ ] 运行 12 个专项回归、全部 v1.3 已跟踪测试和 `compileall`。
+- [ ] 在普通令牌和真实 UAC 管理员令牌下分别运行修复探针。
 - [ ] 使用 `python -m PyInstaller --noconfirm --clean AutoMusicPlayer.spec` 从干净环境构建。
 - [ ] 发布包不得携带 `data/`、`scores.db`、`play_logs`、个人乐谱或旧 `dist/data/scores.db`；首次运行创建新数据目录。
 - [ ] 对最终 EXE 做人工冒烟：外部 AI 粘贴、Unicode 升号、低/中/高三档、暂停/中止、日志列表与导出。

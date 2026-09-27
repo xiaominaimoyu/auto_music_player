@@ -41,6 +41,9 @@ class ImportResult:
     tracks: dict = field(default_factory=dict)
     selected_track: int | None = None
     source_format: str = "native"
+    # 来源层 sidecar；现有 notes 仍是兼容的游戏投影。
+    source_metadata: dict = field(default_factory=dict)
+    raw_text: str = ""
 
 
 class MidiParseError(ValueError):
@@ -239,7 +242,14 @@ def _rich_source_song(data: dict, stem: str) -> SourceSong:
     )
 
 
-def _from_adapted(adapted, *, kind: str, source_format: str, extra_warnings=()):
+def _from_adapted(
+    adapted,
+    *,
+    kind: str,
+    source_format: str,
+    extra_warnings=(),
+    source_metadata=None,
+):
     return ImportResult(
         name=adapted.name,
         bpm=adapted.bpm,
@@ -250,6 +260,7 @@ def _from_adapted(adapted, *, kind: str, source_format: str, extra_warnings=()):
         tracks=dict(adapted.tracks),
         selected_track=adapted.selected_track,
         source_format=source_format,
+        source_metadata=dict(source_metadata or {}),
     )
 
 
@@ -266,7 +277,19 @@ def import_json_many(path: str) -> list[ImportResult]:
     if data.get("format") == "auto-music-player-source":
         song = _rich_source_song(data, stem)
         adapted = adapt_source_song(song, AdaptOptions(style="preserve", track=None))
-        return [_from_adapted(adapted, kind="json", source_format="source-json")]
+        result = _from_adapted(
+            adapted,
+            kind="json",
+            source_format="source-json",
+            extra_warnings=data.get("warnings") if isinstance(data.get("warnings"), list) else (),
+            source_metadata=(
+                data.get("source_metadata")
+                if isinstance(data.get("source_metadata"), dict)
+                else {}
+            ),
+        )
+        result.raw_text = str(data.get("raw_text") or "")
+        return [result]
 
     if isinstance(data.get("events"), list):
         song, warnings = _external_song(data, stem=stem)
@@ -443,7 +466,85 @@ def import_midi(
         kind="midi",
         source_format="midi",
         extra_warnings=initial_warnings,
+        source_metadata=parsed.source_metadata,
     )
+
+
+def import_musicxml(path: str) -> ImportResult:
+    """将 Audiveris/MusicXML 的来源层结果适配为游戏投影。"""
+
+    from core.musicxml_import import MusicXmlImportError, read_musicxml_source
+
+    try:
+        parsed = read_musicxml_source(path)
+        adapted = adapt_source_song(
+            parsed.song,
+            AdaptOptions(style="preserve", track=None),
+        )
+    except (MusicXmlImportError, ValueError) as exc:
+        raise MidiParseError(str(exc)) from exc
+    return _from_adapted(
+        adapted,
+        kind="musicxml",
+        source_format="musicxml",
+        extra_warnings=parsed.warnings,
+        source_metadata=parsed.source_metadata,
+    )
+
+
+def import_staff_omr(path: str, data_dir: str) -> ImportResult:
+    """调用 Audiveris 后继续走窄 MusicXML 适配器。"""
+
+    from core.omr_component import run_audiveris
+
+    output = run_audiveris(path, data_dir)
+    try:
+        result = import_musicxml(output)
+        result.kind = "omr"
+        result.source_format = "audiveris-musicxml"
+        result.warnings.insert(0, "Audiveris 识别结果必须人工校对后才能入库")
+        result.source_metadata = {
+            **result.source_metadata,
+            "recognizer": "audiveris",
+            "input_path": os.path.abspath(os.fspath(path)),
+            "manual_confirmation_required": True,
+        }
+        return result
+    finally:
+        try:
+            import shutil
+
+            shutil.rmtree(os.path.dirname(output), ignore_errors=True)
+        except OSError:
+            pass
+
+
+def import_jianpu_omr(path: str, data_dir: str, *, mode: str = "printed") -> ImportResult:
+    """调用离线简谱组件的 JSON 协议；结果始终要求人工确认。"""
+
+    from core.omr_component import run_jianpu_component
+
+    output = run_jianpu_component(path, data_dir, mode=mode)
+    try:
+        result = import_json(output)
+        result.kind = "omr"
+        result.source_format = "jianpu-omr-json"
+        result.warnings.insert(0, "简谱 OMR 结果必须人工校对后才能入库")
+        result.source_metadata = {
+            **result.source_metadata,
+            "recognizer": "jianpu-omr",
+            "mode": mode,
+            "input_path": os.path.abspath(os.fspath(path)),
+            "manual_confirmation_required": True,
+        }
+        return result
+    finally:
+        try:
+            import shutil
+
+            shutil.rmtree(os.path.dirname(output), ignore_errors=True)
+        except OSError:
+            pass
 
 
 # ---------- 统一入口 ----------
@@ -454,7 +555,15 @@ def import_any(path: str) -> ImportResult:
         return import_json(path)
     if ext in (".mid", ".midi"):
         return import_midi(path)
-    raise ValueError(f"不支持的导入格式: {ext}(支持 .json / .mid / .midi)")
+    if ext in (".musicxml", ".xml", ".mxl"):
+        return import_musicxml(path)
+    if ext in (".pdf", ".docx"):
+        from core.document_import import import_document
+
+        return import_document(path)
+    raise ValueError(
+        f"不支持的导入格式: {ext}(支持 .json / .mid / .midi / .musicxml / .mxl / .pdf / .docx)"
+    )
 
 
 def import_many(path: str) -> list[ImportResult]:
@@ -464,4 +573,12 @@ def import_many(path: str) -> list[ImportResult]:
         return import_json_many(path)
     if ext in (".mid", ".midi"):
         return [import_midi(path)]
-    raise ValueError(f"不支持的导入格式: {ext}(支持 .json / .mid / .midi)")
+    if ext in (".musicxml", ".xml", ".mxl"):
+        return [import_musicxml(path)]
+    if ext in (".pdf", ".docx"):
+        from core.document_import import import_document
+
+        return [import_document(path)]
+    raise ValueError(
+        f"不支持的导入格式: {ext}(支持 .json / .mid / .midi / .musicxml / .mxl / .pdf / .docx)"
+    )

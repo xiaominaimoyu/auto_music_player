@@ -289,7 +289,13 @@ class EventPlayer(QObject):
         comp_s = max(0.0, min(self.latency_compensation_ms, 200.0)) / 1000.0
         # 绝对时钟:事件 i 的目标时刻 = t0 + events[i].t_ms/1000 - 补偿。
         # 与 Player 同款调度,节奏不随事件数累积漂移。
-        base_ms = events[start_index].t_ms if 0 <= start_index < event_total else 0.0
+        # 新会话必须保留首个事件之前的休止/呼吸；只有暂停续播才把当前
+        # 事件平移到“现在”，否则首音前的正向人性化偏移会被吞掉。
+        base_ms = (
+            events[start_index].t_ms
+            if start_index > 0 and 0 <= start_index < event_total
+            else 0.0
+        )
         t0 = time.perf_counter() - base_ms / 1000.0
         try:
             for i in range(start_index, event_total):

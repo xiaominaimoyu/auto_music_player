@@ -17,6 +17,7 @@ Player(21 键路径)与 build_event_plan(编译器路径)共用同一份塑形�
 """
 
 import random
+import secrets
 from dataclasses import dataclass
 
 # ≥ 该拍数的音符视为长音,其后的音符按乐句开头处理(换气)
@@ -39,12 +40,17 @@ class HumanizeParams:
     leap_ms: float = 5.0  # 大跳进附加换指时间(增强:3→5,大跳更明显停顿)
     leap_threshold: int = LEAP_THRESHOLD
     min_gap_ms: float = 1.5  # 塑形后保证的最小不叠键间隙(放宽:2.0→1.5,允许更连贯)
+    # 相邻起音抖动的相关系数。独立白噪声听起来像时钟抖动，适度相关更接近
+    # 人在一个乐句内的连续动作；休止会重置该状态。
+    jitter_correlation: float = 0.65
 
     def __post_init__(self):
         if self.jitter_ms < 0 or self.breath_ms < 0 or self.leap_ms < 0:
             raise ValueError("humanize 幅度参数不能为负数")
         if self.min_gap_ms < 0:
             raise ValueError("min_gap_ms 不能为负数")
+        if not 0.0 <= float(self.jitter_correlation) < 1.0:
+            raise ValueError("jitter_correlation 必须在 [0, 1) 之间")
         for name in ("short_hold", "mid_hold", "long_hold"):
             lo, hi = getattr(self, name)
             if not 0 < lo <= hi <= 1.0:
@@ -62,20 +68,49 @@ def _pitch_value(note_id: str):
     return _OCTAVE_VAL[name] + int(num)
 
 
-def plan_timings(
-    elements, params: HumanizeParams | None = None, rng: random.Random | None = None
-) -> list:
+@dataclass(frozen=True)
+class HumanizePlan:
+    """一次完整、可追溯的真人化计划。
+
+    ``timings`` 保留旧的 ``[(offset_ms, hold_ratio), ...]`` 结构，方便旧
+    播放器和测试继续消费；``seed`` 让两条播放路径能够重放同一份计划。
+    """
+
+    timings: tuple
+    seed: int
+
+
+def make_seed() -> int:
+    """生成一枚会话级 seed；调用方应把它写入演奏日志。"""
+
+    return secrets.randbits(64)
+
+
+def build_plan(
+    elements,
+    params: HumanizeParams | None = None,
+    *,
+    seed: int | None = None,
+    rng: random.Random | None = None,
+) -> HumanizePlan:
     """storage 格式音符序列 → 与元素等长的 (offset_ms, hold_ratio) 列表。
 
     休止元素(notes 为空)的返回项为 (0.0, None)——休止不发声,由调用方跳过;
     但休止参与"乐句边界"判定:休止之后的音符带呼吸停顿。
     """
     p = params or HumanizeParams()
-    rng = rng or random.Random()
+    if rng is None:
+        actual_seed = int(seed if seed is not None else make_seed())
+        rng = random.Random(actual_seed)
+    else:
+        # 外部注入 RNG 主要用于旧测试；没有可回读的内部状态时仍提供一个
+        # 稳定的日志字段，调用方若需要跨路径一致性应传 seed 而不是 rng。
+        actual_seed = int(seed if seed is not None else 0)
     timings = []
     prev_pitch = None  # 上一个发音元素的音高量值
     prev_dur = None  # 上一个元素的时值(拍)
     prev_was_rest = False  # 上一个元素是否为休止
+    correlated_jitter = 0.0
     for el in elements:
         dur = float(el.get("dur") or 0)
         ids = list(el.get("notes") or [])
@@ -85,9 +120,15 @@ def plan_timings(
             prev_pitch = None
             prev_dur = dur
             prev_was_rest = True
+            correlated_jitter = 0.0
             continue
 
-        offset = rng.gauss(0.0, p.jitter_ms)
+        independent_jitter = rng.gauss(0.0, p.jitter_ms)
+        correlated_jitter = (
+            float(p.jitter_correlation) * correlated_jitter
+            + (1.0 - float(p.jitter_correlation)) * independent_jitter
+        )
+        offset = correlated_jitter
         # 乐句边界:前一元素是休止(换气),或长音结尾(重新起手)
         if prev_was_rest or (prev_dur is not None and prev_dur >= PHRASE_LONG_DUR):
             offset += p.breath_ms * rng.uniform(0.6, 1.0)
@@ -110,4 +151,19 @@ def plan_timings(
         prev_pitch = pitch if pitch is not None else prev_pitch
         prev_dur = dur
         prev_was_rest = False
-    return timings
+    return HumanizePlan(tuple(timings), actual_seed)
+
+
+def plan_timings(
+    elements,
+    params: HumanizeParams | None = None,
+    rng: random.Random | None = None,
+    *,
+    seed: int | None = None,
+) -> list:
+    """兼容入口：返回旧的 timings 列表。
+
+    新代码应优先使用 :func:`build_plan`，以便保留 seed。
+    """
+
+    return list(build_plan(elements, params, seed=seed, rng=rng).timings)

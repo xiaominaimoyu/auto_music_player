@@ -11,14 +11,13 @@
 断点语义:音符被中途截断时断点留在该音符,续播时重放;音符间歇期停止则记为已完成。
 """
 
-import random
 import threading
 import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.event_logger import NoteEvent
-from core.humanize import plan_timings
+from core.humanize import make_seed, plan_timings
 from core.keyboard_driver import KeyboardDriver
 
 
@@ -48,6 +47,7 @@ class Player(QObject):
         self.last_log_path = ""
         self.last_event_log_path = ""
         self.last_event_log_error = None
+        self.last_humanize_seed = None
 
     @property
     def keymap(self):
@@ -86,6 +86,7 @@ class Player(QObject):
         score_name="",
         *,
         humanize_override=_USE_CONFIGURED_HUMANIZE,
+        humanize_seed=None,
         trace_context=None,
     ):
         if self.is_playing:
@@ -105,6 +106,7 @@ class Player(QObject):
                 int(start_index),
                 str(score_name),
                 humanize_override,
+                humanize_seed,
                 dict(trace_context or {}),
             ),
             daemon=True,
@@ -145,6 +147,7 @@ class Player(QObject):
         start_index,
         score_name="",
         humanize_override=_USE_CONFIGURED_HUMANIZE,
+        humanize_seed=None,
         trace_context=None,
     ):
         beat_ms = 60000.0 / max(1, bpm)
@@ -154,19 +157,23 @@ class Player(QObject):
         error = None
         comp_s = max(0.0, min(self.latency_compensation_ms, 200.0)) / 1000.0
         gap_s = (gap_ms if gap_ms > 0 else 0.0) / 1000.0
-        # 真人化节奏:每次演奏独立随机(同一谱每次演奏都有细微差异,像真人);
-        # None 时全部按 0 偏移 + 固定 hold_ratio,与历史机械行为完全一致
+        # 真人化节奏:一次会话只生成一枚 seed，供日志、Legacy 和 Delta 重放。
+        # None 时全部按 0 偏移 + 固定 hold_ratio,与历史机械行为完全一致。
         humanize = (
             self._humanize
             if humanize_override is _USE_CONFIGURED_HUMANIZE
             else humanize_override
         )
         if humanize is not None:
-            timings = plan_timings(notes, humanize, random.Random())
+            self.last_humanize_seed = int(
+                humanize_seed if humanize_seed is not None else make_seed()
+            )
+            timings = plan_timings(notes, humanize, seed=self.last_humanize_seed)
             min_gap_s = humanize.min_gap_ms / 1000.0
         else:
             timings = None
             min_gap_s = 0.0
+            self.last_humanize_seed = None
         if self._logger:
             self._logger.start(score_name, bpm, total)
         event_log_started = False
@@ -181,6 +188,7 @@ class Player(QObject):
                     "start_index": start_index,
                     "gap_ms": gap_ms,
                     "humanize_enabled": humanize is not None,
+                    "humanize_seed": self.last_humanize_seed,
                 }
                 details.update(trace_context or {})
                 self._event_logger.log_env("playback_pipeline", **details)

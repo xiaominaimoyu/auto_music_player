@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "version": "1.4.2",
+  "sequence": 142,
+  "min_supported": "1.3.0",
+  "urls": [
+    "https://gitee.com/muming04yue/auto_music_player/releases/download/v1.4.2/AutoMusicPlayer.exe",
+    "https://github.com/xiaominaimoyu/auto_music_player/releases/download/v1.4.2/AutoMusicPlayer.exe"
+  ],
+  "size": 28685373,
+  "sha256": "fcc0ce52eb5be7b2b4eeb83df8b62002c8e671638b65fabff182d75e93c015a6",
+  "issued_at": "2026-09-27T00:00:00Z",
+  "expires_at": "2027-03-31T23:59:59Z",
+  "db_schema_version": 2,
+  "release_notes": "v1.4.2 稳定版。第一阶段更新器仅验证并提示，不会自动下载或替换程序。",
+  "signature": "o3jKMLpEa17OmfDpW9j65PSNvVn3fjgFtO53LkhdAOY4GZduOW9qPxTQbI2PVQNtDxIHcOQl0tk2ZwiV9cQ7CA=="
+}

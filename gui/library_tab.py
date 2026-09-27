@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -19,12 +20,15 @@ from PyQt6.QtWidgets import (
 from core.score_io import (
     export_json,
     export_midi,
+    import_jianpu_omr,
     import_many,
     import_midi,
+    import_staff_omr,
     inspect_midi,
 )
+from core.document_import import DocumentImportError
+from core.omr_component import IMAGE_EXTENSIONS, OMRComponentError, OMRComponentUnavailable
 from core.score_model import ScoreValidationError
-from core.transport import MIN_GAME_NOTE_MS, prepare_score
 from gui.import_dialog import MidiImportDialog
 from gui.score_editor_dialog import ScoreEditorDialog
 from gui.theme import BRAND, INK_2, STATE_INFO, STATE_SUCCESS
@@ -74,7 +78,9 @@ class LibraryTab(QWidget):
         del_btn.clicked.connect(self._delete_selected)
         import_btn = QPushButton("导入乐谱")
         import_btn.setObjectName("BtnSecondary")
-        import_btn.setToolTip("从 JSON 或 MIDI 文件导入乐谱(.json / .mid / .midi)")
+        import_btn.setToolTip(
+            "从 JSON、MIDI 或文本型 PDF/DOCX 导入；识别结果必须人工确认"
+        )
         import_btn.clicked.connect(self._import_score)
         exp_json_btn = QPushButton("导出 JSON")
         exp_json_btn.setObjectName("BtnSecondary")
@@ -121,6 +127,8 @@ class LibraryTab(QWidget):
             src_item = QTableWidgetItem(
                 "图片" if src == "image"
                 else "文档" if src == "document"
+                else "MusicXML" if src == "musicxml"
+                else "离线 OMR" if src == "omr"
                 else "导入" if src == "import"
                 else "手动" if src == "manual"
                 else "-"
@@ -197,9 +205,19 @@ class LibraryTab(QWidget):
     # ---------- 导入 / 导出 ----------
 
     def _import_score(self):
-        path, _ = QFileDialog.getOpenFileName(self, "导入乐谱", "", "乐谱文件 (*.json *.mid *.midi)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入乐谱",
+            "",
+            (
+                "乐谱/文档/图片 (*.json *.mid *.midi *.musicxml *.xml *.mxl "
+                "*.pdf *.docx *.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp);;"
+                "所有文件 (*.*)"
+            ),
+        )
         if not path:
             return
+        extension = path.lower().rsplit(".", 1)[-1] if "." in path else ""
         try:
             if path.lower().endswith((".mid", ".midi")):
                 parsed = inspect_midi(path)
@@ -219,28 +237,57 @@ class LibraryTab(QWidget):
                     fold_octaves=options.fold_octaves,
                     bpm=int(options.bpm) if options.bpm is not None else None,
                 )
-                prepared = prepare_score(
-                    result.notes,
-                    bpm=result.bpm,
-                    min_playable_ms=MIN_GAME_NOTE_MS,
-                )
-                timing_cleanup_count = sum(
-                    "游戏可演奏下限" in item.reason
-                    for item in prepared.degradations
-                )
-                result.notes = prepared.notes
-                result.degradations.extend(prepared.degradations)
-                if timing_cleanup_count:
-                    result.warnings.append(
-                        f"已将 {timing_cleanup_count} 个短于 {MIN_GAME_NOTE_MS:g}ms、"
-                        "游戏难以稳定采样的碎片并入相邻旋律，歌曲总时长不变。"
-                    )
                 results = [result]
+            elif extension in {item.lstrip(".") for item in IMAGE_EXTENSIONS}:
+                choice, ok = QInputDialog.getItem(
+                    self,
+                    "选择离线识别器",
+                    "输入类型：",
+                    [
+                        "印刷五线谱（Audiveris）",
+                        "印刷简谱（离线组件）",
+                        "手写简谱（离线组件）",
+                    ],
+                    0,
+                    False,
+                )
+                if not ok:
+                    return
+                if choice.startswith("印刷五线谱"):
+                    results = [import_staff_omr(path, self._db.data_dir)]
+                else:
+                    mode = "handwritten" if choice.startswith("手写") else "printed"
+                    results = [import_jianpu_omr(path, self._db.data_dir, mode=mode)]
             else:
                 results = import_many(path)
+                if (
+                    extension == "pdf"
+                    and results
+                    and all(not result.notes for result in results)
+                ):
+                    raise DocumentImportError(
+                        "PDF 没有可解析文本；可改用 Audiveris 处理印刷五线谱"
+                    )
         except ScoreValidationError as e:
             AppDialog.show_error(self, "导入失败", f"数据未通过校验:\n{e}")
             return
+        except (OMRComponentUnavailable, OMRComponentError) as e:
+            AppDialog.show_error(self, "离线识别组件不可用", str(e))
+            return
+        except DocumentImportError as e:
+            if extension == "pdf" and AppDialog.confirm(
+                self,
+                "文本抽取失败",
+                str(e) + "\n\n是否改用 Audiveris 离线识别印刷五线谱？",
+            ):
+                try:
+                    results = [import_staff_omr(path, self._db.data_dir)]
+                except (OMRComponentUnavailable, OMRComponentError, ValueError, OSError) as exc:
+                    AppDialog.show_error(self, "离线识别失败", str(exc))
+                    return
+            else:
+                AppDialog.show_error(self, "文档导入失败", str(e))
+                return
         except (ValueError, OSError) as e:
             AppDialog.show_error(self, "导入失败", str(e))
             return
@@ -263,15 +310,60 @@ class LibraryTab(QWidget):
             info += "\n\n处理报告：\n" + "\n".join(warnings[:8])
             if len(warnings) > 8:
                 info += f"\n…另有 {len(warnings) - 8} 条"
+        if any(result.kind in {"document", "omr", "musicxml"} for result in results):
+            # 识别结果必须经过可编辑表格人工确认，不能只依赖摘要弹窗。
+            for result in results:
+                if result.kind not in {"document", "omr", "musicxml"}:
+                    continue
+                review = ScoreEditorDialog(
+                    {
+                        "name": result.name,
+                        "bpm_default": result.bpm,
+                        "notes": result.notes,
+                    },
+                    self,
+                )
+                review.setWindowTitle(f"识别校对：{result.name}")
+                if review.exec() != review.DialogCode.Accepted:
+                    return
+                try:
+                    values = review.values()
+                except ValueError as exc:
+                    AppDialog.show_error(self, "校对失败", str(exc))
+                    return
+                result.name = values["name"]
+                result.bpm = values["bpm_default"]
+                result.notes = values["notes"]
         if not AppDialog.confirm(self, "导入确认", info + "\n\n确定加入乐谱库吗?"):
+            return
+        source_meta = None
+        try:
+            # 只有用户确认入库后才保存原始来源，避免取消识别留下孤儿文件。
+            if any(result.source_metadata for result in results):
+                archive = self._db.archive_source_file(
+                    path,
+                    source_kind="midi" if path.lower().endswith((".mid", ".midi")) else "source",
+                )
+                source_meta = {
+                    **archive,
+                    "schema_version": 1,
+                    "metadata": results[0].source_metadata,
+                }
+        except (OSError, ValueError) as exc:
+            AppDialog.show_error(self, "导入失败", f"保存原始来源失败：{exc}")
             return
         records = [
             {
                 "name": result.name,
                 "notes": result.notes,
                 "source_file": path,
-                "source_type": "import",
+                "source_type": (
+                    result.kind if result.kind in {"document", "musicxml", "omr"}
+                    else "import"
+                ),
+                "raw_text": result.raw_text,
                 "bpm_default": result.bpm,
+                "source_meta": source_meta,
             }
             for result in results
         ]

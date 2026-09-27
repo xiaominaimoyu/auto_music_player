@@ -6,9 +6,11 @@
 """
 
 import ctypes
+import sys
+import time
 
 from pynput import keyboard as pk
-from PyQt6.QtCore import QEvent, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSettings, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -27,6 +29,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.preview_player import PreviewPlayer
+from core.update_checker import check_for_update
+from core.version import APP_VERSION, UPDATE_SEQUENCE
 from gui.library_tab import LibraryTab
 from gui.log_tab import PlayLogTab
 from gui.log_texts import NAV_LOG_TEXT
@@ -42,6 +46,7 @@ from gui.theme import (
     SURFACE_3,
 )
 from gui.upload_tab import UploadTab
+from gui.widgets import AppDialog
 
 NAV_ITEMS = [
     ("上传识别", "↑"),
@@ -195,6 +200,7 @@ class MainWindow(QMainWindow):
     ):
         super().__init__()
         self._cfg = cfg
+        self._db = db
         self._player = player
         self._config_path = config_path
         # 游戏档位(M3 起由 main.py 注入):当前激活档位与全部候选档位。
@@ -274,6 +280,16 @@ class MainWindow(QMainWindow):
 
         self.player_tab.refresh()
 
+        # 第一阶段只在正式打包应用中按间隔检查并提示；开发/测试运行不访问
+        # 发布镜像，手动按钮仍可用于验证配置。
+        update_cfg = cfg.get("update") or {}
+        if (
+            bool(update_cfg.get("enabled"))
+            and getattr(sys, "frozen", False)
+            and self._update_check_due(update_cfg)
+        ):
+            QTimer.singleShot(1500, lambda: self._check_updates(silent=True))
+
         # 应用级事件过滤器:子控件覆盖边缘时也能命中拉伸
         QApplication.instance().installEventFilter(self)
 
@@ -284,6 +300,24 @@ class MainWindow(QMainWindow):
     def _on_hotkey_stop(self):
         """F8 全局热键:同时停止 Player 和 EventPlayer。"""
         self.hotkey_stop_requested.emit()
+
+    @staticmethod
+    def _update_check_due(update_cfg):
+        try:
+            interval_hours = max(1.0, float(update_cfg.get("check_interval_hours", 24)))
+        except (TypeError, ValueError):
+            interval_hours = 24.0
+        settings = QSettings("AutoMusicPlayer", "AutoMusicPlayer")
+        try:
+            last = float(settings.value("update/last_check_epoch", 0) or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        now = time.time()
+        if now - last < interval_hours * 3600:
+            return False
+        settings.setValue("update/last_check_epoch", now)
+        settings.sync()
+        return True
 
     def _cleanup_on_quit(self):
         """退出清理:停全局热键监听与演奏线程,确保全部按键释放。"""
@@ -297,6 +331,10 @@ class MainWindow(QMainWindow):
         if self._event_player is not None:
             self._event_player.shutdown()
         self._preview_player.shutdown()
+        try:
+            self._db.close()
+        except Exception:
+            pass
 
     def _build_ui(self):
         root = QWidget()
@@ -339,7 +377,12 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        footer = QLabel("v1.4.2")
+        update_btn = QPushButton("检查更新")
+        update_btn.setObjectName("BtnSecondary")
+        update_btn.clicked.connect(self._check_updates)
+        sidebar_layout.addWidget(update_btn)
+
+        footer = QLabel(f"v{APP_VERSION}")
         footer.setObjectName("SidebarFooter")
         sidebar_layout.addWidget(footer)
 
@@ -428,6 +471,49 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.player_tab.rearm_focus_watch()
+
+    def _check_updates(self, silent=False):
+        """第一阶段只检查并提示；不下载、不替换当前 EXE。"""
+
+        update_cfg = self._cfg.get("update") or {}
+        urls = update_cfg.get("manifest_urls") or []
+        if isinstance(urls, str):
+            urls = [urls]
+        if not urls:
+            if not silent:
+                AppDialog.show_info(
+                    self,
+                    "检查更新",
+                    "当前未配置签名更新 manifest。请先完成发布端公钥和双镜像配置。",
+                )
+            return
+        try:
+            result = check_for_update(
+                APP_VERSION,
+                urls,
+                str(update_cfg.get("public_key") or ""),
+                current_sequence=UPDATE_SEQUENCE,
+            )
+        except Exception as exc:
+            if not silent:
+                AppDialog.show_warning(self, "检查更新失败", str(exc))
+            return
+        if result.update_available and result.manifest is not None:
+            notes = result.manifest.release_notes.strip()
+            message = f"发现新版本 v{result.manifest.version}。\n\n{notes}".strip()
+            AppDialog.show_info(
+                self,
+                "发现更新",
+                message + "\n\n当前阶段仅提示，不会自动下载或替换文件。",
+            )
+            self.set_status(f"发现更新 v{result.manifest.version}")
+            return
+        if result.error:
+            if not silent:
+                AppDialog.show_warning(self, "检查更新失败", result.error)
+        else:
+            if not silent:
+                AppDialog.show_info(self, "检查更新", "当前已是最新版本")
 
     def set_status(self, text: str):
         self.status_label.setText(text)
