@@ -20,14 +20,57 @@ class AmpAccessibilityService : AccessibilityService() {
 
         val ready: Boolean
             get() = instance != null
+
+        /**
+         * 覆盖层类包名:它们浮在游戏之上(华为小窗由 hwdockbar 承载、游戏助手侧边栏、
+         * 系统栏),窗口状态变化会上报它们,但点下去仍然落在底下的游戏,不算"丢失目标"。
+         *
+         * 刻意不含桌面与负一屏(com.huawei.android.launcher / com.huawei.intelligent):
+         * 那两类是真替换前台,点到上面的绝对坐标就是误触。
+         */
+        val TRANSPARENT_PACKAGES = setOf(
+            "com.android.systemui",
+            "com.huawei.hwdockbar",
+            "com.huawei.gameassistant",
+        )
     }
+
+    /**
+     * 最近一次窗口状态变化上报的前台包名。
+     *
+     * 触摸注入是按屏幕绝对坐标落点的,前台是谁就点谁:下拉通知栏、切到别的应用、
+     * 游戏弹出暂停界面,都会让同一串坐标点到完全不同的东西上。派发前核对这个值,
+     * 是桌面版"目标窗口失焦自动暂停"在安卓端的等价物。
+     */
+    @Volatile
+    var foregroundPackage: String? = null
+        private set
+
+    /**
+     * 最近一次"真正的全屏应用"包名:排除本应用与覆盖层。
+     *
+     * 本应用常被当成悬浮小窗盖在游戏上用,此时窗口状态变化上报的是小窗自己
+     * (或承载小窗的 hwdockbar),拿它当演奏目标会把游戏排除在外。
+     */
+    @Volatile
+    var lastExternalPackage: String? = null
+        private set
+
+    /** 该包名是否"透明"——浮层或本应用自身,不算丢失演奏目标。 */
+    fun isTransparent(pkg: String?): Boolean =
+        pkg == null || pkg == packageName || pkg in TRANSPARENT_PACKAGES
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val pkg = event.packageName?.toString()?.takeIf { it.isNotEmpty() } ?: return
+        foregroundPackage = pkg
+        if (!isTransparent(pkg)) lastExternalPackage = pkg
+    }
 
     override fun onInterrupt() {}
 

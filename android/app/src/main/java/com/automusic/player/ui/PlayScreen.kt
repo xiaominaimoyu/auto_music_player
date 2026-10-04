@@ -93,7 +93,13 @@ fun PlayScreen(container: AppContainer) {
 
     LaunchedEffect(Unit) {
         while (true) {
-            a11yReady = AmpAccessibilityService.ready
+            val ready = AmpAccessibilityService.ready
+            // 无障碍服务在演奏中途被关闭:立刻中止会话,而不是等下一次派发才抛异常。
+            // 读 flow 当前值而不是委托给组合期快照,否则这个循环里看到的永远是首轮的状态。
+            if (!ready && deltaPlayer.state.value is DeltaPlayerEngine.State.Playing) {
+                sessionManager.onAccessibilityDisconnected()
+            }
+            a11yReady = ready
             delay(1500)
         }
     }
@@ -110,6 +116,18 @@ fun PlayScreen(container: AppContainer) {
     var notice by remember { mutableStateOf<String?>(null) }
     var scoreMenuOpen by remember { mutableStateOf(false) }
     var layoutMenuOpen by remember { mutableStateOf(false) }
+    var targetMenuOpen by remember { mutableStateOf(false) }
+
+    // 可启动应用列表:供"演奏目标应用"显式锁定用
+    val launchable = remember {
+        val pm = context.packageManager
+        runCatching {
+            pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                .distinctBy { it.first }
+                .sortedBy { it.second }
+        }.getOrDefault(emptyList())
+    }
 
     // 库页点过来的联动
     LaunchedEffect(Unit) {
@@ -186,11 +204,17 @@ fun PlayScreen(container: AppContainer) {
                 }
                 deltaDegradations = result.degradations
             } else {
-                // 鸣潮/原神路径:PlayerEngine(原有逻辑零改动)
+                // 鸣潮/原神路径:PlayerEngine
                 val startIndex = (playState as? PlayerEngine.State.Paused)?.done ?: 0
+                // 前台服务必须在应用还可见时启动:倒计时结束后用户已切到游戏后台,
+                // Android 12+ 会拒绝从后台 startForegroundService。
+                PlaybackService.start(context)
                 for (i in 3 downTo 1) { countdown = i; delay(1000) }
                 countdown = null
-                PlaybackService.start(context)
+                // 目标前台:优先用用户在「演奏目标应用」里显式锁定的包名,没选才退回
+                // 自动检测(最近一个非覆盖层前台)。覆盖层与本应用自身始终算合法前台。
+                val svc = AmpAccessibilityService.instance
+                val target = container.targetPackage ?: svc?.lastExternalPackage
                 player.play(
                     notes = notes,
                     bpm = bpm.toInt(),
@@ -201,6 +225,9 @@ fun PlayScreen(container: AppContainer) {
                     screenH = h,
                     startIndex = startIndex,
                     humanize = if (humanizeOn) HumanizeParams() else null,
+                    allowedForeground = setOfNotNull(target, context.packageName) +
+                        AmpAccessibilityService.TRANSPARENT_PACKAGES,
+                    foregroundPackage = { AmpAccessibilityService.instance?.foregroundPackage },
                 )
             }
         }
@@ -318,6 +345,46 @@ fun PlayScreen(container: AppContainer) {
                                 onClick = {
                                     container.layouts.setActive(l.id)
                                     layoutMenuOpen = false
+                                },
+                            )
+                        }
+                    }
+                }
+
+                // 注入是按绝对坐标落点的:必须显式知道在往谁身上点。
+                ExposedDropdownMenuBox(
+                    expanded = targetMenuOpen,
+                    onExpandedChange = { targetMenuOpen = it },
+                ) {
+                    OutlinedTextField(
+                        value = container.targetPackage?.let { pkg ->
+                            launchable.firstOrNull { it.first == pkg }?.second ?: pkg
+                        } ?: "目标应用:自动检测",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("演奏目标应用") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = targetMenuOpen) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = targetMenuOpen,
+                        onDismissRequest = { targetMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("自动检测(最近一个非覆盖层前台)") },
+                            onClick = {
+                                container.targetPackage = null
+                                targetMenuOpen = false
+                            },
+                        )
+                        launchable.forEach { (pkg, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    container.targetPackage = pkg
+                                    targetMenuOpen = false
                                 },
                             )
                         }
@@ -486,6 +553,11 @@ fun PlayScreen(container: AppContainer) {
             }
         }
         if (!isDelta && legacyPaused != null) {
+            val residualNote = if (legacyPaused.residualMs > 0) {
+                " · 已发出的手势还会按住 ${legacyPaused.residualMs} ms(无障碍手势无法中途取消)"
+            } else {
+                ""
+            }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 LinearProgressIndicator(
                     progress = { if (legacyPaused.total == 0) 0f else legacyPaused.done.toFloat() / legacyPaused.total },
@@ -495,12 +567,21 @@ fun PlayScreen(container: AppContainer) {
                         .clip(RoundedCornerShape(4.dp)),
                 )
                 Text(
-                    "已暂停:${legacyPaused.done} / ${legacyPaused.total} · 「继续演奏」或「重置」",
+                    "已暂停:${legacyPaused.done} / ${legacyPaused.total}$residualNote · 「继续演奏」或「重置」",
                     color = com.automusic.player.ui.theme.StateWarning,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                legacyPaused.guardNote?.let {
+                    Text(
+                        "自动暂停:$it · 回到目标界面后再点「继续演奏」",
+                        color = StateError,
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
         if (isDelta && deltaAborted != null) {

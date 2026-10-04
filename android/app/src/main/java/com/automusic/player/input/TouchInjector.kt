@@ -1,5 +1,8 @@
 package com.automusic.player.input
 
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+
 /** 单个 Stroke 的相对开始时刻与按住时长，用于同一原子无障碍手势。 */
 data class TimedTouch(
     val x: Float,
@@ -62,6 +65,20 @@ object TouchInjector {
         }
         return accepted
     }
+
+    /**
+     * 挂起至手势自然结束。返回 false 表示这条手势被系统拒绝或被取消
+     * (后一次 dispatchGesture 抢占、或用户手指落在屏上都会导致取消)。
+     *
+     * 取消必须被看见而不是吞掉:它是"音被掐断"的直接证据。
+     */
+    suspend fun dispatchTimelineAwait(strokes: List<TimedTouch>): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            val accepted = dispatchTimeline(strokes) { completed ->
+                if (continuation.isActive) continuation.resume(completed)
+            }
+            if (!accepted && continuation.isActive) continuation.resume(false)
+        }
 
     /** 单点轻触(标定/测试用)。 */
     fun tap(x: Float, y: Float) {

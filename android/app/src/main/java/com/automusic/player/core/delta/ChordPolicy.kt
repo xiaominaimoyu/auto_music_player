@@ -5,7 +5,7 @@ package com.automusic.player.core.delta
  *
  * - CHORD_FIRST      取首音,其余降级
  * - CHORD_REJECT     返回休止并降级
- * - CHORD_ARPEGGIATE 拆为单音序列(预留)
+ * - CHORD_ARPEGGIATE 拆为时值均分的单音序列(与桌面版 compiler 一致)
  */
 enum class ChordPolicy {
     CHORD_FIRST,

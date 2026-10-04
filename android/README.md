@@ -18,7 +18,37 @@
 | keymap.py | core/KeyPointMap.kt | 音符 → **屏幕坐标**(归一化 0..1) |
 | player.py | core/PlayerEngine.kt | 协程 + 绝对时钟调度 + 真人化 |
 | keyboard_driver.py(SendInput) | input/TouchInjector.kt + AmpAccessibilityService | 无障碍手势注入 |
+| compiler.py 的事件折叠 | core/GestureBatcher.kt | 多音符折叠进同一条手势,规避"后一次派发取消前一次" |
+| score_io.py 导出 JSON | core/ScoreJson.kt | 桌面「导出 JSON」可直接导入手机 |
+| score_model.py require_valid | core/ScoreValidation.kt | 入库前校验(键位/时值/BPM),规则一致 |
+| upload_tab.py 校对表编辑 | core/ScoreEditing.kt | 逐音改音符/时值/半音、插删、撤销 |
+| preview_player.py | core/ScorePreview.kt | 安卓无系统音源,改用正弦音(音色不同,用途一致) |
 | gui/(PyQt6) | ui/(Jetpack Compose) | 暗色琥珀金主题对齐 |
+
+## v1.4.0 真机实测结论(nova 11 / HarmonyOS 4.2 / API 31)
+
+稳定性(17 次会话、108 条手势批次,由 `AmpPlay` 日志统计):
+
+- 完全无接触的演奏会话 **7/7 全部 `cancelled_gestures=0`**;14 次手势取消全部对应人为触屏或前台窗口切换
+- 批边界派发延迟 `late_ms`:中位 2、p95 6、p99 9;除每会话首批外中位 1ms,**无累积漂移**
+- 崩溃 / ANR:0;前台服务在 Android 12 的后台启动限制下正常(改为倒计时前启动)
+- 暂停续播沿用同一枚会话 seed,真人化计划可重放
+- 多指和弦在同一条手势内同时落指(实测 3 指)
+
+已知限制(实测确认,非缺陷清单):
+
+- **停止有残留按住**:已派发的无障碍手势 Android 无取消 API,实测残留 117–792ms,界面会如实显示
+- **命中按格子判定**:原神琴键列距约 212px、行距 168px,默认预设偏移 ≤84px 仍在正确格内(听感无差别),但不居中
+- **布局不会随游戏自动切换**:需手动在「琴键布局」选择;「演奏目标应用」需显式选择,自动检测在华为悬浮小窗下会锁到 `hwdockbar`/`gameassistant` 等覆盖层
+- **单手势上限**:≤10 指、≤60 秒
+- **21 键档无半音层**:升号音符按自然音演奏并计入降级提示
+- 未对齐桌面端的能力:MIDI/MusicXML/PDF/图片 OMR 导入、谱面实时录制、练习模式、移调、片段选择、演奏记录页、延迟校准、自动更新
+
+## 构建产物与签名
+
+`dist/AutoMusicPlayer-v1.4.0-android-debug.apk`(debug 签名,versionCode 10)。
+debug 证书与 v1.1.2 一致,可 `adb install -r` 覆盖升级并保留曲谱库。
+仓库内没有 release keystore,正式分发需先自建签名配置(私钥不得入库)。
 
 ## 环境要求
 

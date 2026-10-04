@@ -95,7 +95,7 @@ object DeltaCompiler {
                 index, requested, "rest", "CHORD_REJECT:和弦拒绝,降级为休止",
             )
             ChordPolicy.CHORD_ARPEGGIATE -> notes.first() to Degradation(
-                index, requested, notes.first(), "CHORD_ARPEGGIATE:拆分未实现,取首音",
+                index, requested, notes.first(), "CHORD_ARPEGGIATE:单音无需拆分",
             )
         }
     }
@@ -217,6 +217,34 @@ object DeltaCompiler {
         val resolved = mutableListOf<ResolvedNote>()
 
         for ((idx, note) in notes.withIndex()) {
+            // 琶音:和弦拆成时值均分的单音序列。子音共享同一 sourceIndex,
+            // 因此 DeltaTouchExecutor 会把它们装进同一条原子手势,按各自的相对时刻落指。
+            if (params.chordPolicy == ChordPolicy.CHORD_ARPEGGIATE && note.notes.size > 1) {
+                allDegradations.add(
+                    Degradation(
+                        idx,
+                        note.notes.joinToString(","),
+                        "arpeggio×${note.notes.size}",
+                        "CHORD_ARPEGGIATE:和弦按拍序均分展开",
+                    )
+                )
+                val share = note.dur / note.notes.size
+                for (id in note.notes) {
+                    val parsed = parseNoteId(id)
+                    if (parsed == null) {
+                        allDegradations.add(Degradation(idx, id, "rest", "无法解析 note_id:$id"))
+                        continue
+                    }
+                    val (octave, noteNum) = parsed
+                    val (modifier, modDeg) = resolveModifier(
+                        octaveToModifier(octave), note.semitone, params.modifierPolicy, idx,
+                    )
+                    if (modDeg != null) allDegradations.add(modDeg)
+                    resolved.add(ResolvedNote(idx, noteNum, modifier, share, emptyList()))
+                }
+                continue
+            }
+
             // 和弦降级
             val (chordNoteId, chordDeg) = resolveChord(note.notes, params.chordPolicy, idx)
             if (chordDeg != null) allDegradations.add(chordDeg)
