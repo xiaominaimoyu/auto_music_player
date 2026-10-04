@@ -161,10 +161,14 @@ python main.py            # 普通权限(记事本测试够用)
 ```
 core/        # 来源乐谱 / MIDI / 录制 / 练习 / IR / 编译 / 双播放路径 / SQLite
 gui/         # PyQt6 界面(上传识别 / 乐谱库 / 演奏控制 / 演奏记录)
+android/     # 安卓端(Kotlin + Compose):简谱录入 -> 无障碍手势触摸注入,见 android/README.md
 profiles/    # 游戏档位配置(default=鸣潮/原神,delta_force_harmonica=三角洲口琴)
 tests/       # 单元测试与端到端测试
 data/        # 运行时数据(数据库 / 上传文件),已 gitignore,不会提交
 ```
+
+安卓端是独立发布线(版本号与桌面端不同步):桌面端 v1.5.1 对应安卓端 v1.4.0。
+安卓端只支持简谱文本录入与桌面端「导出 JSON」导入,MIDI/MusicXML/OMR 仍是桌面端独有能力。
 
 ## 测试
 
