@@ -2,6 +2,14 @@
 
 > ⚠️ 这是 **debug 签名**构建，用于功能与稳定性验证，不是正式发行版：仓库内没有 release keystore，未做 Authenticode 签名。安装时系统会提示「来自未知来源」，HarmonyOS 还会在手机上弹一次安装确认框。
 
+## 下载
+
+二进制托管在 GitHub Releases：**Gitee 发行版附件的单文件上限低于本包 17.8 MB**，被上传组件在客户端直接拒绝（`FileOverSizeLimit`）。
+
+- APK 直链：https://github.com/xiaominaimoyu/auto_music_player/releases/download/android-v1.4.0/AutoMusicPlayer-v1.4.0-android-debug.apk
+- Release 页：https://github.com/xiaominaimoyu/auto_music_player/releases/tag/android-v1.4.0
+- SHA-256：`1ebc584b6c80e8053ba604cca54b475c86acbb8c12f8b6e2914d9cede377c3a7`
+
 ## 安装
 
 - 要求：Android 8.0+（实测 HarmonyOS 4.2 / API 31）
