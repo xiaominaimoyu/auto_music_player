@@ -1,0 +1,2 @@
+# Optional offline listening renderer, separate from production EXE packaging.
+tinysoundfont==0.3.7

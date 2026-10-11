@@ -7,6 +7,7 @@ EventPlayer boundary.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from core.score_io import midi_to_note_id, note_id_to_midi
@@ -60,6 +61,47 @@ def _pitch_to_storage(pitch: int) -> tuple[str, int]:
     return note_id, semitone
 
 
+def _split_long_elements(
+    notes: list[dict], source_indices: list[int], minimum_beats: float
+) -> tuple[list[dict], list[TransportDegradation]]:
+    """Cap absorbed elements without creating a new sub-minimum tail.
+
+    Keep the importer's 16-beat boundaries where possible.  If the final
+    remainder is too short, borrow only its deficit from the preceding piece.
+    A total shorter than the minimum remains intact; extending it would change
+    the score timeline.  Callers validate input before absorbing durations.
+    """
+    output = []
+    degradations = []
+    for source, source_index in zip(notes, source_indices):
+        duration = float(source["dur"])
+        if duration <= MAX_DUR_BEATS:
+            output.append(source)
+            continue
+        count = math.ceil(duration / MAX_DUR_BEATS)
+        durations = [MAX_DUR_BEATS] * (count - 1)
+        durations.append(duration - MAX_DUR_BEATS * (count - 1))
+        borrowed = durations[-1] < minimum_beats
+        if borrowed:
+            durations[-2] -= minimum_beats - durations[-1]
+            durations[-1] = minimum_beats
+        reason = (
+            "保留总时值；存储格式不支持延音连线，切分点重新触发"
+            if source["notes"] else "保留总时值；休止切分不触发按键"
+        )
+        if borrowed:
+            reason += "；从前段补足末段最短可演奏时值"
+        degradations.append(TransportDegradation(
+            source_index, f"{duration:g} 拍片段", f"切分为 {count} 个≤{MAX_DUR_BEATS:g} 拍片段", reason
+        ))
+        for piece_duration in durations:
+            item = dict(source)
+            item["notes"] = list(source["notes"])
+            item["dur"] = piece_duration
+            output.append(item)
+    return output, degradations
+
+
 def _stabilize_short_elements(
     notes: list[dict],
     *,
@@ -86,14 +128,10 @@ def _stabilize_short_elements(
         anchor = max(range(len(notes)), key=lambda index: float(notes[index]["dur"]))
         kept = dict(notes[anchor])
         kept["notes"] = list(kept.get("notes") or [])
-        remaining = sum(float(item["dur"]) for item in notes)
-        collapsed = []
-        while remaining > 1e-9:
-            item = dict(kept)
-            item["notes"] = list(kept["notes"])
-            item["dur"] = min(remaining, MAX_DUR_BEATS)
-            collapsed.append(item)
-            remaining -= item["dur"]
+        kept["dur"] = math.fsum(float(item["dur"]) for item in notes)
+        collapsed, split_degradations = _split_long_elements(
+            [kept], [source_start + anchor], minimum_ms / beat_ms
+        )
         degradations = [
             TransportDegradation(
                 source_start + index,
@@ -104,9 +142,10 @@ def _stabilize_short_elements(
             for index, item in enumerate(notes)
             if index != anchor
         ]
-        return collapsed, degradations
+        return collapsed, degradations + split_degradations
 
     output: list[dict] = []
+    source_indices: list[int] = []
     pending_duration = 0.0
     degradations: list[TransportDegradation] = []
     for index, source in enumerate(notes):
@@ -132,10 +171,12 @@ def _stabilize_short_elements(
             item["dur"] = duration + pending_duration
             pending_duration = 0.0
         output.append(item)
+        source_indices.append(source_start + index)
 
     if pending_duration and output:
         output[-1]["dur"] = float(output[-1]["dur"]) + pending_duration
-    return output, degradations
+    output, split_degradations = _split_long_elements(output, source_indices, minimum_ms / beat_ms)
+    return output, degradations + split_degradations
 
 
 def prepare_score(
@@ -176,9 +217,13 @@ def prepare_score(
     ):
         raise ValueError("最短可演奏时值必须在 0 到 1000 毫秒之间")
 
+    # Validate before deduplication, transposition, or fragment absorption can
+    # hide invalid source values (including non-finite or over-limit durations).
+    selected = notes[start_index:end_index]
+    require_valid(selected)
     output = []
     degradations = []
-    for absolute_index, source in enumerate(notes[start_index:end_index], start=start_index):
+    for absolute_index, source in enumerate(selected, start=start_index):
         ids = list(source.get("notes") or [])
         unique_ids = list(dict.fromkeys(ids))
         if len(unique_ids) != len(ids):

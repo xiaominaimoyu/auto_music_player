@@ -1,0 +1,4 @@
+# Reproducible environment used for the validated preprocessing runs on 2026-09-28.
+mido==1.3.3
+numpy==2.5.3
+pytest==9.1.1
