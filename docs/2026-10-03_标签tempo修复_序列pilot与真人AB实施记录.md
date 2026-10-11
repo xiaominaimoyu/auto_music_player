@@ -17,7 +17,7 @@
 | training/review_quality_mask.py | 保守 v3 策略 |
 | training/compare_quality_multiseed.py | 多 seed 配对比较 |
 
-操作记录在 `E:/auto_music_player_ml/data/evaluations/20261003_capability/git_preflight_P1_20261003.md`。其余既有未跟踪文件保留。**本次后续实现尚未提交，需另列清单并确认。**
+操作记录在 `<ML_ROOT>/data/evaluations/20261003_capability/git_preflight_P1_20261003.md`。其余既有未跟踪文件保留。**本次后续实现尚未提交，需另列清单并确认。**
 
 ## 2. 标签/tempo 修复：完成条件补齐和物理时间验证
 
@@ -28,7 +28,7 @@
 实际产物：
 
 ```text
-E:/auto_music_player_ml/data/evaluations/20261003_capability/tempo_reference_244_24_20261003
+<ML_ROOT>/data/evaluations/20261003_capability/tempo_reference_244_24_20261003
 ```
 
 268/268 个参考样本通过源成员、shard、offset、mask/label 对齐及 hash 验证。原标签还原公式为：
@@ -54,7 +54,7 @@ MLP64/GRU64 参数量 7,816/52,872，额外 MLP128 为23,816；这是同输入/�
 实际产物：
 
 ```text
-E:/auto_music_player_ml/data/training_runs/v3/tempo_sequence_pilot_20261003
+<ML_ROOT>/data/training_runs/v3/tempo_sequence_pilot_20261003
 ```
 
 9 个 run 与9个 audit 全部完成，子目录 inventory 与文件 hash 复核；父 `_SUCCESS` 绑定 `pilot_summary.json`，摘要绑定所有子 inventory。无 tempo MLP 的原始预测另做物理时间评估，只追加父摘要，不改变其训练或子产物。本轮不重新读取 test shard/MIDI；历史研究 test 曾被接触，不将其包装成全新最终盲测。
@@ -103,7 +103,7 @@ identity 的 fixed_score 1/4/16小节漂移分别为620.240/2312.298/3386.515 ms
 正式收集包（仅此 ZIP 可发给参与者；v1为集成中间产物，不再使用）：
 
 ```text
-E:/auto_music_player_ml/data/evaluations/20261003_capability/preference_collection_v2_20261003/listening_bundle.zip
+<ML_ROOT>/data/evaluations/20261003_capability/preference_collection_v2_20261003/listening_bundle.zip
 SHA256: 4d48433e858404664f0e028d98cc39624e662bd6cffa11dcf2c2f2fb37bb36de
 ```
 
@@ -114,7 +114,7 @@ SHA256: 4d48433e858404664f0e028d98cc39624e662bd6cffa11dcf2c2f2fb37bb36de
 正式回收目录：
 
 ```text
-E:/auto_music_player_ml/data/evaluations/20261003_capability/preference_collection_v2_20261003/responses
+<ML_ROOT>/data/evaluations/20261003_capability/preference_collection_v2_20261003/responses
 ```
 
 验收：独立 `--synthetic` 测试包在 Chromium/file:// 实际播放6个WAV（静音16倍速，仅工程测试）、验证未同意阻断、实际点击导出并保存2293-byte JSON，通过严格loader和回收审计；无HTTP/HTTPS资源请求或页面错误。命令行浏览器下载封装曾超时/取消，改用 Playwright `expect_download/save_as` 完成真正落盘验证。自动化答卷不计真人。证据在 `preference_browser_evidence_v2_20261003`，审计在 `preference_browser_v2_response_audit_20261003`。
@@ -123,15 +123,15 @@ E:/auto_music_player_ml/data/evaluations/20261003_capability/preference_collecti
 
 ## 5. 复现与回收命令
 
-输出必须使用新目录；现有产物不覆盖。ML Python 为 `E:/auto_music_player_ml/venv/Scripts/python.exe`。
+输出必须使用新目录；现有产物不覆盖。ML Python 为 `<ML_ROOT>/venv/Scripts/python.exe`。
 
 ```powershell
-$MlPython = 'E:\auto_music_player_ml\venv\Scripts\python.exe'
-$Capability = 'E:\auto_music_player_ml\data\evaluations\20261003_capability'
+$MlPython = '<ML_ROOT>\venv\Scripts\python.exe'
+$Capability = '<ML_ROOT>\data\evaluations\20261003_capability'
 
 & $MlPython -m training.run_sequence_pilot `
-  --dataset 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\full_20261003_w8' `
-  --output 'E:\auto_music_player_ml\data\training_runs\v3\tempo_sequence_pilot_repeat' `
+  --dataset '<ML_ROOT>\data\processed\pianocore_expression\v2\full_20261003_w8' `
+  --output '<ML_ROOT>\data\training_runs\v3\tempo_sequence_pilot_repeat' `
   --timing-reference "$Capability\tempo_reference_244_24_20261003" `
   --train-sample-id-file "$Capability\quality_pilot_500_20261003\train_sample_ids.txt" `
   --validation-sample-id-file "$Capability\quality_pilot_500_20261003\validation_sample_ids.txt" `
@@ -140,7 +140,7 @@ $Capability = 'E:\auto_music_player_ml\data\evaluations\20261003_capability'
 
 & $MlPython -m training.preference_dataset `
   --bundle-root "$Capability\preference_collection_v2_20261003" `
-  --response 'E:\received_answers\returned.json'
+  --response '<ML_ROOT>\received_answers\returned.json'
 
 & $MlPython -m training.audit_preferences `
   --bundle-root "$Capability\preference_collection_v2_20261003" `

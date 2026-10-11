@@ -1,5 +1,7 @@
 # 深度学习数据采集与预处理
 
+> 快照说明：本分支是研究线的脱敏快照，公开仓库里不保留本机绝对路径。命令示例中的占位符含义：`<ML_ROOT>` 是本地机器学习数据根目录（含 `data/processed`、`data/evaluations`、`data/training_runs` 与 `venv`），`<APP_REPO>` 是主应用仓库副本，`<USER_HOME>` 是用户主目录。产物指纹（sha256）、样本 ID、run_config 数值与提交哈希均未改动，可按本文口径在本地复现。
+
 本目录只负责“把原始演奏数据变成可审计的训练输入”。它不会修改桌面端演奏器、不会调用外部大模型 API，也不处理 Android 客户端。
 
 ## 已建立的两条数据入口
@@ -42,7 +44,7 @@ v1 pilot 的 train 中有约 38.6% 和弦起音偏差超出该辅助通道范围
 已验证环境位于：
 
 ```text
-E:\auto_music_player_ml\venv
+<ML_ROOT>\venv
 Python 3.12.11
 NumPy 2.5.3
 mido 1.3.3
@@ -52,8 +54,8 @@ mido 1.3.3
 
 本机已锁定的主数据输入位于 E 盘：
 
-- refined ZIP：`E:\auto_music_player_ml\data\datasets\pianocore\1.0\downloads\PianoCoRe-1.0-refined.zip`，3,581,508,325 bytes，SHA-256 `68f1b182741387eb8c74d98a5805bc382435136e8c9228dabe351627cc74ef0f`；
-- A* metadata：`E:\auto_music_player_ml\data\datasets\pianocore\1.0\manifests\metadata_a_star.csv`，127,583,589 bytes，SHA-256 `221e4ce015081f1e0f9325cbccf024ff4fa558edea04912206c52b2fb70e697f`；
+- refined ZIP：`<ML_ROOT>\data\datasets\pianocore\1.0\downloads\PianoCoRe-1.0-refined.zip`，3,581,508,325 bytes，SHA-256 `68f1b182741387eb8c74d98a5805bc382435136e8c9228dabe351627cc74ef0f`；
+- A* metadata：`<ML_ROOT>\data\datasets\pianocore\1.0\manifests\metadata_a_star.csv`，127,583,589 bytes，SHA-256 `221e4ce015081f1e0f9325cbccf024ff4fa558edea04912206c52b2fb70e697f`；
 - 当前 A* 候选共 130,275 条。正式构建仍会把输入大小与 hash 写入 `build_config.json`，不能只依赖此处记录。
 
 ## 运行 PianoCoRe 预处理
@@ -61,13 +63,13 @@ mido 1.3.3
 PowerShell 示例：
 
 ```powershell
-$MlPython = 'E:\auto_music_player_ml\venv\Scripts\python.exe'
-$PianoRoot = 'E:\auto_music_player_ml\data\datasets\pianocore\1.0'
+$MlPython = '<ML_ROOT>\venv\Scripts\python.exe'
+$PianoRoot = '<ML_ROOT>\data\datasets\pianocore\1.0'
 
 & $MlPython -m training.pianocore_dataset `
   --metadata "$PianoRoot\manifests\metadata_a_star.csv" `
   --archive "$PianoRoot\downloads\PianoCoRe-1.0-refined.zip" `
-  --output 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\smoke' `
+  --output '<ML_ROOT>\data\processed\pianocore_expression\v2\smoke' `
   --mode smoke `
   --smoke-per-group 1 `
   --strict
@@ -83,7 +85,7 @@ $PianoRoot = 'E:\auto_music_player_ml\data\datasets\pianocore\1.0'
 & $MlPython -m training.pianocore_dataset `
   --metadata "$PianoRoot\manifests\metadata_a_star.csv" `
   --archive "$PianoRoot\downloads\PianoCoRe-1.0-refined.zip" `
-  --output 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\full' `
+  --output '<ML_ROOT>\data\processed\pianocore_expression\v2\full' `
   --mode full `
   --workers 2 `
   --max-score-cache-entries 8
@@ -108,13 +110,13 @@ $PianoRoot = 'E:\auto_music_player_ml\data\datasets\pianocore\1.0'
 
 ```powershell
 & $MlPython -m training.validate_pianocore_dataset `
-  --dataset 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\full'
+  --dataset '<ML_ROOT>\data\processed\pianocore_expression\v2\full'
 ```
 
 它会复核 `_SUCCESS`、完整性清单及每个文件 hash，使用 `allow_pickle=False` 回读全部 shard，并核对准确的 v2 schema/参数/provenance、数组维度与 dtype、finite、offset、`note_to_chord`、mask 语义、标签范围、manifest 诊断与 shard 定位、完整 train-only normalizer、汇总计数与 split 泄漏。manifest 与 reject 按行读取，normalizer 按 train shard 汇总，避免按样本反复分配大型直方图。验证命令应使用上述 `python -m training.validate_pianocore_dataset` 模块入口。
 
 本机当前已完成正式 v2 full 构建并通过独立 validator：输出为
-`E:\auto_music_player_ml\data\processed\pianocore_expression\v2\full_20261003_w8`，
+`<ML_ROOT>\data\processed\pianocore_expression\v2\full_20261003_w8`，
 130,275 条候选中接受 130,238、拒绝 37（均为 `MidiFeatureError`），共 302,620,399 个 note、161,629,130 个 chord；train/validation/test 为 108,649/9,667/11,922，作品、score 路径和 score 语义三类 split 泄漏均为 0。目录约 6.16 GB，`_SUCCESS` 与 `integrity.json` hash 已复核一致。旧的 2-worker 中止部分保留在 `full_20261003_partial_workers2`，不得进入训练。
 
 ## 第一阶段可执行训练
@@ -139,12 +141,12 @@ $PianoRoot = 'E:\auto_music_player_ml\data\datasets\pianocore\1.0'
 复核命令（输出目录须使用新的空目录）：
 
 ```powershell
-& 'E:\auto_music_player_ml\venv\Scripts\python.exe' `
+& '<ML_ROOT>\venv\Scripts\python.exe' `
   -m training.review_quality_mask `
-  --dataset-root 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\full_20261003_w8' `
-  --archive 'E:\auto_music_player_ml\data\datasets\pianocore\1.0\downloads\PianoCoRe-1.0-refined.zip' `
-  --source-audit 'E:\auto_music_player_ml\data\evaluations\20261003_capability\run02_source_quality.json' `
-  --output-dir 'E:\auto_music_player_ml\data\evaluations\20261003_capability\quality_mask_v2_calibrated_20261003' `
+  --dataset-root '<ML_ROOT>\data\processed\pianocore_expression\v2\full_20261003_w8' `
+  --archive '<ML_ROOT>\data\datasets\pianocore\1.0\downloads\PianoCoRe-1.0-refined.zip' `
+  --source-audit '<ML_ROOT>\data\evaluations\20261003_capability\run02_source_quality.json' `
+  --output-dir '<ML_ROOT>\data\evaluations\20261003_capability\quality_mask_v2_calibrated_20261003' `
   --policy quality-mask-v2-calibrated
 ```
 
@@ -154,42 +156,42 @@ $PianoRoot = 'E:\auto_music_player_ml\data\datasets\pianocore\1.0'
 P1 扩展抽检示例：
 
 ```powershell
-& 'E:\auto_music_player_ml\venv\Scripts\python.exe' `
+& '<ML_ROOT>\venv\Scripts\python.exe' `
   -m training.audit_source_quality `
-  --dataset-root 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\full_20261003_w8' `
-  --archive 'E:\auto_music_player_ml\data\datasets\pianocore\1.0\downloads\PianoCoRe-1.0-refined.zip' `
-  --output 'E:\auto_music_player_ml\data\evaluations\20261003_capability\run03_source_quality_100.json' `
+  --dataset-root '<ML_ROOT>\data\processed\pianocore_expression\v2\full_20261003_w8' `
+  --archive '<ML_ROOT>\data\datasets\pianocore\1.0\downloads\PianoCoRe-1.0-refined.zip' `
+  --output '<ML_ROOT>\data\evaluations\20261003_capability\run03_source_quality_100.json' `
   --per-source 100
 ```
 
 选定 validation 子集后，可用 `audit_expression.py --sample-id-file ... --validation-cache ...` 分别审计多个 checkpoint，再用 `compare_quality_multiseed.py --pair SEED BASELINE_AUDIT SOFT_MASK_AUDIT` 做作品级 paired bootstrap。该比较只用于 pilot 门禁，不替代锁定 test 或最终盲测。
 
-v3 的同配置复核只需将训练命令中的 sidecar、ID 清单和输出目录切换到 `E:\auto_music_player_ml\data\evaluations\20261003_capability\quality_mask_v3_target_specific_500_20261003` 与 `quality_pilot_v3_target_specific_500_20261003`；已完成的三 seed 审计结果位于对应 `audits`，配对结果由 `multiseed_paired_comparison.json` 固化。v3 仍未达到全量采用门槛，不得替换正式 checkpoint。
+v3 的同配置复核只需将训练命令中的 sidecar、ID 清单和输出目录切换到 `<ML_ROOT>\data\evaluations\20261003_capability\quality_mask_v3_target_specific_500_20261003` 与 `quality_pilot_v3_target_specific_500_20261003`；已完成的三 seed 审计结果位于对应 `audits`，配对结果由 `multiseed_paired_comparison.json` 固化。v3 仍未达到全量采用门槛，不得替换正式 checkpoint。
 
 诊断 pilot 的样本选择由 `build_quality_pilot.py` 固化：每个触发样本匹配同来源、不同作品、相近音符数且无审计警告的对照。P0 原始产物为 9 个 train 触发样本 + 9 个 train 对照，以及 2 个 validation 触发样本 + 2 个 validation 对照；P1 扩展产物为 122+122 个 train、12+12 个 validation，v2/v3 使用同一组 ID。对应训练命令示例：
 
 ```powershell
-& 'E:\auto_music_player_ml\venv\Scripts\python.exe' `
+& '<ML_ROOT>\venv\Scripts\python.exe' `
   -m training.train_expression `
-  --dataset 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\full_20261003_w8' `
-  --output 'E:\auto_music_player_ml\data\training_runs\v2\quality_pilot_softmask_a_seed20261003' `
+  --dataset '<ML_ROOT>\data\processed\pianocore_expression\v2\full_20261003_w8' `
+  --output '<ML_ROOT>\data\training_runs\v2\quality_pilot_softmask_a_seed20261003' `
   --device cuda --epochs 5 --batch-size 8192 `
   --input-normalize --relative-position --shuffle-shards `
-  --train-sample-id-file 'E:\auto_music_player_ml\data\evaluations\20261003_capability\quality_pilot_20261003\train_sample_ids.txt' `
-  --validation-sample-id-file 'E:\auto_music_player_ml\data\evaluations\20261003_capability\quality_pilot_20261003\validation_sample_ids.txt' `
-  --validation-cache 'E:\auto_music_player_ml\data\evaluations\20261003_capability\quality_pilot_20261003\dataset_validation_cache.json' `
-  --quality-mask 'E:\auto_music_player_ml\data\evaluations\20261003_capability\quality_mask_v2_calibrated_20261003\quality_mask.jsonl'
+  --train-sample-id-file '<ML_ROOT>\data\evaluations\20261003_capability\quality_pilot_20261003\train_sample_ids.txt' `
+  --validation-sample-id-file '<ML_ROOT>\data\evaluations\20261003_capability\quality_pilot_20261003\validation_sample_ids.txt' `
+  --validation-cache '<ML_ROOT>\data\evaluations\20261003_capability\quality_pilot_20261003\dataset_validation_cache.json' `
+  --quality-mask '<ML_ROOT>\data\evaluations\20261003_capability\quality_mask_v2_calibrated_20261003\quality_mask.jsonl'
 ```
 
 smoke 数据链路已实际完成一次 CUDA tiny baseline：
 
 ```powershell
-$MlPython = 'E:\auto_music_player_ml\venv\Scripts\python.exe'
-$Dataset = 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\smoke_v1'
+$MlPython = '<ML_ROOT>\venv\Scripts\python.exe'
+$Dataset = '<ML_ROOT>\data\processed\pianocore_expression\v2\smoke_v1'
 
 & $MlPython -m training.train_expression `
   --dataset $Dataset `
-  --output 'E:\auto_music_player_ml\data\training_runs\v2\smoke_tiny_overfit' `
+  --output '<ML_ROOT>\data\training_runs\v2\smoke_tiny_overfit' `
   --device cuda `
   --epochs 30 `
   --batch-size 2048 `
@@ -201,8 +203,8 @@ $Dataset = 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\smoke
 
 在上述 full 数据上已实际执行 CUDA 训练（RTX 5060 Laptop GPU，Torch 2.11.0+cu128，batch size 32768，最多 5 epoch，early stopping patience 2）：
 
-- baseline：`E:\auto_music_player_ml\data\training_runs\v2\full_expression_baseline_b32768`，最佳 epoch 5，validation loss 0.39222；锁定 test loss 0.38295；
-- regularized backup（dropout 0.2、weight decay 5e-4、hidden 256）：`E:\auto_music_player_ml\data\training_runs\v2\full_expression_regularized_b32768`，最佳 epoch 3，validation loss 0.39072，锁定 test loss 0.38115；
+- baseline：`<ML_ROOT>\data\training_runs\v2\full_expression_baseline_b32768`，最佳 epoch 5，validation loss 0.39222；锁定 test loss 0.38295；
+- regularized backup（dropout 0.2、weight decay 5e-4、hidden 256）：`<ML_ROOT>\data\training_runs\v2\full_expression_regularized_b32768`，最佳 epoch 3，validation loss 0.39072，锁定 test loss 0.38115；
 - 同一 test split 的训练集均值常数基线 loss 约 0.39126，因此正则化模型总损失有所改善；但 `log_key_duration_ratio` test MAE 仍为 0.92017，高于常数基线约 0.78248，暂不把任何 checkpoint 直接接入播放器；下一轮应先做目标加权和序列上下文实验。
 
 两套训练目录均已通过 `_SUCCESS`/`integrity.json` 一致性检查；test 评估只读执行，没有参与调参。
@@ -220,12 +222,12 @@ $Dataset = 'E:\auto_music_player_ml\data\processed\pianocore_expression\v2\smoke
 严格校验并生成不含原始按键/窗口信息的安全清单：
 
 ```powershell
-$MlPython = 'E:\auto_music_player_ml\venv\Scripts\python.exe'
+$MlPython = '<ML_ROOT>\venv\Scripts\python.exe'
 $CaptureRoot = "$env:LOCALAPPDATA\AutoMusicPlayer\data\performance_captures"
 
 & $MlPython -m training.local_capture_manifest `
   --capture-root $CaptureRoot `
-  --output 'E:\auto_music_player_ml\data\processed\local_captures\audit-001'
+  --output '<ML_ROOT>\data\processed\local_captures\audit-001'
 ```
 
 校验包含 schema、JSONL 顺序和时序、原始内容 hash、press 配对、synthetic close、从事件重算的完整 quality、canonical score hash，以及规范谱与演奏音高多重集合。失败样本只进入 `rejects.jsonl`，源文件不会被移动、修复或删除。
@@ -236,7 +238,7 @@ $CaptureRoot = "$env:LOCALAPPDATA\AutoMusicPlayer\data\performance_captures"
 
 ## A/B 偏好数据的启动条件
 
-已生成3题/6 WAV的离线盲听启动包，正式真人偏好仍为0；不能用自动化测试或规则生成的伪偏好代替真人选择。启动包位于 `E:\auto_music_player_ml\data\evaluations\20261003_capability\preference_collection_v2_20261003\listening_bundle.zip`，只分发该 ZIP，私有模型映射留在研究端。完整解压后打开 `index.html`，主动同意分享后手动导出/交回答卷；程序不上传。切分时按匿名参与者和 `piece_group` 同时隔离，A/B 数据只用于偏好评测或后续排序阶段，不混入锁定 test。3作品启动包不足作品维度统计区间门槛，需要后续扩展到至少5个许可明确的独立作品。
+已生成3题/6 WAV的离线盲听启动包，正式真人偏好仍为0；不能用自动化测试或规则生成的伪偏好代替真人选择。启动包位于 `<ML_ROOT>\data\evaluations\20261003_capability\preference_collection_v2_20261003\listening_bundle.zip`，只分发该 ZIP，私有模型映射留在研究端。完整解压后打开 `index.html`，主动同意分享后手动导出/交回答卷；程序不上传。切分时按匿名参与者和 `piece_group` 同时隔离，A/B 数据只用于偏好评测或后续排序阶段，不混入锁定 test。3作品启动包不足作品维度统计区间门槛，需要后续扩展到至少5个许可明确的独立作品。
 
 ## Tempo 条件与小型序列 pilot（2026-10-03）
 
@@ -274,7 +276,7 @@ $CaptureRoot = "$env:LOCALAPPDATA\AutoMusicPlayer\data\performance_captures"
 
 接线状态（2026-10-06 P1）：`sequence_expression.py` 的 `SequenceSample` 增加 score-only 的 `bar_span_rows/bar_span_horizons/bar_boundary_indices/bar_requested_horizons`（都能由 audit NPZ 重建，不依赖 target），`attach_bar_geometry()` 只读 timing reference 里的谱面几何，`make_windows_from_config()` 按 `window_policy` 切窗，`collate_windows()` 只在三个 bar 权重任一 > 0 时才输出窗口局部 span 张量与 `bar_ioi_mask`；`predict_sample()` 改走 `make_windows_from_config`，所以辅助 loss 关掉也不会退回固定 128。`train_sequence_expression.py` 新增 `--window-policy/--max-window-chords/--bar-horizons/--bar-elapsed-weight/--bar-tempo-weight/--bar-local-weight`，默认 `fixed` + 权重 0，即与历史 run 逐字同行为；`bar_*` 权重启用时强制 `window_policy=bar`、拒绝 `target_shuffle`、要求纯谱面 timing reference，并把 `bar_windows.py/bar_objective.py/bar_supervision.py` 的实现 hash 一起写进 `run_config.json`。`audit_sequence_expression.py` 在预测 NPZ 里落四个 score-only 几何数组并在 report 写 `bar_layout` 覆盖计数；`benchmark_sequence_inference.py` 缺几何就报错，并记录 zero-target 下实际规划出的 core 数与固定 128 应得的核数。**仍未启动任何训练，没有改动播放链路、GUI 或 Android。**
 
-真实覆盖对比（只读诊断，`tools/compare_bar_window_coverage.py`，产物 `E:\auto_music_player_ml\data\evaluations\20261003_capability\bar_window_coverage_balanced_250_50_20261006`，summary sha256 `5a32f79402b100e37099c7f938b50e3a57d56ec9de7ccf43a2bbed7b7f37e2b2`；口径为 eligible 跨度中两端同属一个 core 的数量）：
+真实覆盖对比（只读诊断，`tools/compare_bar_window_coverage.py`，产物 `<ML_ROOT>\data\evaluations\20261003_capability\bar_window_coverage_balanced_250_50_20261006`，summary sha256 `5a32f79402b100e37099c7f938b50e3a57d56ec9de7ccf43a2bbed7b7f37e2b2`；口径为 eligible 跨度中两端同属一个 core 的数量）：
 
 | split | horizon | eligible | fixed 128 core | bar 对齐 core | 倍数 |
 |---|---|---|---|---|---|
@@ -287,11 +289,11 @@ $CaptureRoot = "$env:LOCALAPPDATA\AutoMusicPlayer\data\performance_captures"
 
 `capacity_forced_split` 在两个 split、三个 horizon 上都是 0，说明 512 上限在真实均衡集上从不强制切开小节；bar 对齐丢掉的跨度全部归类为 `crosses_bar_aligned_cut`（validation h=16 为 1391 个，含恰好终止于 core 边界的跨度，按定义排除而不截断）。这些是覆盖计数，不是听感或接入证据。
 
-端到端管线检查（`tools/check_bar_inference_plumbing.py`，产物 `E:\auto_music_player_ml\data\evaluations\20261003_capability\bar_inference_plumbing_20261006`，summary sha256 `b501459562359507a571c5106a05037bc6194eceb51f0328b62a9b6a7f9b3e62`）：把 sequence pilot `gru_tempo_seed20261003` 的权重与 train-only normalizer 原样拷进两个 fixture run（`window_policy` 分别为 fixed 和 bar，脚本本身不做任何训练，summary 里 `trained=false`、`model_quality_evaluated=false`），再在锁定的 50 个 balanced validation 样本上真跑 `audit_sequence_expression` 与 `benchmark_sequence_inference`。结果：bar audit 的 `bar_layout` 报出 159 个 core / 63997 chord，与独立诊断工具逐字一致；只用预测 NPZ 里的四个 score-only 几何数组重新规划，也能重建出同样的 159 core / 63997 chord（`audit_and_npz_layout_match=true`，最大窗宽 512），而同一批样本在固定 128 core 下需要 523 个 core；两个策略的 zero-target 重复推理都 bitwise 相同。CPU 4 线程下 bar 的 median/p95/max = 0.0257/0.1126/0.2331 秒，fixed = 0.0368/0.1458/0.2955 秒；前一次独立运行是 0.0288 对 0.0350 median，即 bar 因前向次数降到 1/3.29 而略快，但单次抖动约 10%，不要当成精确性能结论。以上只证明几何侧车、integrity 绑定与推理布局可复现，不证明模型质量、听感偏好或可以接入播放器。
+端到端管线检查（`tools/check_bar_inference_plumbing.py`，产物 `<ML_ROOT>\data\evaluations\20261003_capability\bar_inference_plumbing_20261006`，summary sha256 `b501459562359507a571c5106a05037bc6194eceb51f0328b62a9b6a7f9b3e62`）：把 sequence pilot `gru_tempo_seed20261003` 的权重与 train-only normalizer 原样拷进两个 fixture run（`window_policy` 分别为 fixed 和 bar，脚本本身不做任何训练，summary 里 `trained=false`、`model_quality_evaluated=false`），再在锁定的 50 个 balanced validation 样本上真跑 `audit_sequence_expression` 与 `benchmark_sequence_inference`。结果：bar audit 的 `bar_layout` 报出 159 个 core / 63997 chord，与独立诊断工具逐字一致；只用预测 NPZ 里的四个 score-only 几何数组重新规划，也能重建出同样的 159 core / 63997 chord（`audit_and_npz_layout_match=true`，最大窗宽 512），而同一批样本在固定 128 core 下需要 523 个 core；两个策略的 zero-target 重复推理都 bitwise 相同。CPU 4 线程下 bar 的 median/p95/max = 0.0257/0.1126/0.2331 秒，fixed = 0.0368/0.1458/0.2955 秒；前一次独立运行是 0.0288 对 0.0350 median，即 bar 因前向次数降到 1/3.29 而略快，但单次抖动约 10%，不要当成精确性能结论。以上只证明几何侧车、integrity 绑定与推理布局可复现，不证明模型质量、听感偏好或可以接入播放器。
 
-权重标定探针（`tools/compare_bar_loss_scales.py`，产物 `E:\auto_music_player_ml\data\evaluations\20261003_capability\bar_loss_scale_comparison_20261011`，summary sha256 `48afe3753ab863bc0eb0e5fd6372d2be7f4a3a3b0ddf6794e704396e7411be23`）：取均衡集 train 侧排序前 12 个样本（10654 chord），加载 `gru_tempo_seed20261003` 的权重后只跑评估 epoch（`optimizer=None`，本脚本不训练），三个 bar 权重全置 1.0 以观察各路原始量级。结果：bar_elapsed 0.008158、bar_tempo 0.008841、bar_local 0.006311，三者同在一个量级（最大最小差约 40%），合计 0.023309，相当于 point loss 0.26440 的 **8.8%**；同一切换下 fixed 与 bar 的 point loss 分别是 0.26442 与 0.26440，`log_ioi_ratio` 目标 MAE 都是 0.1371，即**每个 chord 只被监督一次这条不变量在两种布局下成立**，换布局没有偷走或重复监督。窗口数由 88 个 core（平均窗宽 148.6、最大 160）降到 28 个（平均 398.8、最大 511）。各 horizon 的候选与可监督跨度：h=1 920/1065、h=4 651/982、h=16 273/667——h=16 大量落在 native mask 不合格上，而不是被 core 边界切掉；`local_rows_excluded` 与 `clipped_rows` 均为 0。据此第一个 pilot 已确定把三个权重都取 1.0（用户 2026-10-11 决定；bar 约占目标函数 9%，无需再缩放）；按"占比 5%/10%/25%"反解出的权重点（例如 3.24/2.99/4.19）只是可选刻度，会让 bar 占到约 30%，不作为默认。这个 1.0 是起点不是结论，最终取值仍要由小 pilot 的验证损失与作品级指标决定，本探针不构成任何接入依据。
+权重标定探针（`tools/compare_bar_loss_scales.py`，产物 `<ML_ROOT>\data\evaluations\20261003_capability\bar_loss_scale_comparison_20261011`，summary sha256 `48afe3753ab863bc0eb0e5fd6372d2be7f4a3a3b0ddf6794e704396e7411be23`）：取均衡集 train 侧排序前 12 个样本（10654 chord），加载 `gru_tempo_seed20261003` 的权重后只跑评估 epoch（`optimizer=None`，本脚本不训练），三个 bar 权重全置 1.0 以观察各路原始量级。结果：bar_elapsed 0.008158、bar_tempo 0.008841、bar_local 0.006311，三者同在一个量级（最大最小差约 40%），合计 0.023309，相当于 point loss 0.26440 的 **8.8%**；同一切换下 fixed 与 bar 的 point loss 分别是 0.26442 与 0.26440，`log_ioi_ratio` 目标 MAE 都是 0.1371，即**每个 chord 只被监督一次这条不变量在两种布局下成立**，换布局没有偷走或重复监督。窗口数由 88 个 core（平均窗宽 148.6、最大 160）降到 28 个（平均 398.8、最大 511）。各 horizon 的候选与可监督跨度：h=1 920/1065、h=4 651/982、h=16 273/667——h=16 大量落在 native mask 不合格上，而不是被 core 边界切掉；`local_rows_excluded` 与 `clipped_rows` 均为 0。据此第一个 pilot 已确定把三个权重都取 1.0（用户 2026-10-11 决定；bar 约占目标函数 9%，无需再缩放）；按"占比 5%/10%/25%"反解出的权重点（例如 3.24/2.99/4.19）只是可选刻度，会让 bar 占到约 30%，不作为默认。这个 1.0 是起点不是结论，最终取值仍要由小 pilot 的验证损失与作品级指标决定，本探针不构成任何接入依据。
 
-首个 matched GPU pilot（2026-10-11，用户授权可训练后执行；产物 `E:\auto_music_player_ml\data\training_runs\v4\bar_matched_20261011\{fixed,bar}_seed2026100{3,4,5}`，对比汇总 `E:\auto_music_player_ml\data\evaluations\20261003_capability\bar_matched_pilot_20261011`，summary sha256 `0fa80c43a007773cf4858db61ba4d8e8306393427c1a5d32d1f6017fd9758d99`）：均衡集 250 train / 50 validation，GRU hidden 64、dropout 0.1、lr 1e-3、wd 1e-4、batch 32、5 epoch、3 个 seed，两臂只差 `window_policy` 与三个 bar 权重（均 1.0，bar 臂 max window 512）。
+首个 matched GPU pilot（2026-10-11，用户授权可训练后执行；产物 `<ML_ROOT>\data\training_runs\v4\bar_matched_20261011\{fixed,bar}_seed2026100{3,4,5}`，对比汇总 `<ML_ROOT>\data\evaluations\20261003_capability\bar_matched_pilot_20261011`，summary sha256 `0fa80c43a007773cf4858db61ba4d8e8306393427c1a5d32d1f6017fd9758d99`）：均衡集 250 train / 50 validation，GRU hidden 64、dropout 0.1、lr 1e-3、wd 1e-4、batch 32、5 epoch、3 个 seed，两臂只差 `window_policy` 与三个 bar 权重（均 1.0，bar 臂 max window 512）。
 
 结论是**负面的，而且必须按三 seed 读**：
 
