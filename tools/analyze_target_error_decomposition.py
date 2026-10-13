@@ -130,7 +130,7 @@ def main(argv=None) -> int:
         if flags not in prepared:
             prepared[flags] = load_selected_samples(dataset_root, arguments.split, sample_ids,
                                                    timing_reference=reference, relative_position=flags[2],
-                                                   duration_centering=flags[0], shape_features=flags[1])
+                                                   duration_centering=flags[0], shape_feature_names=flags[1])
             if not prepared[flags]:
                 raise TrainingRunError("no samples selected for the error decomposition")
         samples = prepared[flags]

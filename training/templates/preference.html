@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' file: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>离线演奏试听</title>
+<style>
+body{font:17px/1.65 system-ui,sans-serif;color:#24333a;background:#f3f6f7;margin:0}main{max-width:850px;margin:auto;padding:30px 18px 80px}h1{font-size:29px;margin:0 0 10px}h2{font-size:21px}section,.intro{background:#fff;border:1px solid #dae2e4;border-radius:12px;padding:20px;margin:18px 0}.muted{color:#51626a;font-size:15px}.audios{display:grid;grid-template-columns:1fr 1fr;gap:18px}audio{width:100%}fieldset{border:0;padding:8px 0;margin:10px 0}legend{font-weight:600}label.choice{display:inline-flex;align-items:center;gap:5px;padding:9px 12px;margin:4px;border:1px solid #b7c5ca;border-radius:7px}input[type=radio],input[type=checkbox]{width:18px;height:18px}button{font:inherit;cursor:pointer;border:1px solid #738a95;border-radius:7px;padding:9px 15px;background:white;color:#24333a}button.primary{background:#215c69;color:white}.error{color:#a32828}.badge{padding:6px 10px;border-radius:6px;background:#fff0bd}input[type=text]{display:block;box-sizing:border-box;width:100%;max-width:490px;font:16px monospace;padding:9px;border:1px solid #9bafb7;border-radius:5px}button:focus-visible,input:focus-visible{outline:3px solid #2486ad;outline-offset:3px}.status{min-height:26px}details{font-size:14px}@media(max-width:560px){.audios{grid-template-columns:1fr}main{padding:20px 12px}}
+</style>
+</head>
+<body><main>
+<h1>离线演奏试听</h1>
+<p>请比较同一段乐曲的两种演奏，选择你觉得更自然、更愿意继续听的一段。没有标准答案，也可以选择平局或跳过。</p>
+<div class="intro">
+<p id="testBadge" class="badge" hidden>这是工具测试包。答卷只用于验证流程，不计入真人偏好数据。</p>
+<p>请完整解压后打开本页面，保持音频文件在原目录。使用同一副耳机或扬声器和相同音量，听完 A、B 后作答；可以反复试听。两段的显示顺序已随机安排。</p>
+<p class="muted">页面完全离线，没有上传和网络请求，不收集姓名、账号、IP、设备指纹或自由文本。点击“导出答卷”只下载一个 JSON 文件；是否把文件交给组织者，由你决定。导出文件包含匿名编号、题目与音频校验值、选择及浏览器播放完成标记。</p>
+<label for="participant">你的匿名编号（再次参加同一研究时可粘贴以前的编号）</label>
+<input id="participant" type="text" spellcheck="false" autocomplete="off" aria-describedby="participantHelp">
+<p id="participantHelp" class="muted">编号是随机产生的，不来自设备信息。请保留编号，以便研究端去重和按参与者统计。不要填写姓名或邮箱。</p>
+<details><summary>研究与版本</summary><p id="versions"></p></details>
+</div>
+<div id="trials"></div>
+<section>
+<label><input id="consent" type="checkbox"> 我愿意将此答卷交给组织者用于演奏偏好研究和汇总评测，知道导出不会自动上传。答卷不是数据公开授权。</label>
+<p class="muted">可以保留未选择的题目；未选择和跳过不会变成胜负标签。实际分享前请检查导出的文件。若需要撤回，向组织者提供匿名编号和答卷编号。</p>
+<button id="export" class="primary" type="button">导出答卷 JSON</button>
+<p id="status" class="status" role="status" aria-live="polite"></p>
+</section>
+<noscript>需要启用本地 JavaScript 才能随机显示音频与导出答卷；本页面不连接网络。</noscript>
+</main>
+<script id="bundleManifest" type="application/json">__BUNDLE_MANIFEST__</script>
+<script>
+"use strict";
+const manifest = JSON.parse(document.getElementById("bundleManifest").textContent);
+function uuid() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") globalThis.crypto.getRandomValues(bytes);
+  else for (let i=0;i<16;i++) bytes[i] = Math.floor(Math.random()*256);
+  bytes[6] = (bytes[6]&15)|64; bytes[8] = (bytes[8]&63)|128;
+  const hex = Array.from(bytes, b=>b.toString(16).padStart(2,"0")).join("");
+  return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join("-");
+}
+function randomInt(max) {
+  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {
+    const value = new Uint32Array(1), bound = Math.floor(4294967296/max)*max;
+    do { globalThis.crypto.getRandomValues(value); } while (value[0]>=bound);
+    return value[0]%max;
+  }
+  return Math.floor(Math.random()*max);
+}
+function shuffled(values) {
+  const result = values.slice();
+  for (let i=result.length-1;i>0;i--) { const j=randomInt(i+1); [result[i],result[j]]=[result[j],result[i]]; }
+  return result;
+}
+function node(tag, text, className) {
+  const el=document.createElement(tag); if(text!==undefined) el.textContent=text; if(className) el.className=className; return el;
+}
+const sessionId=uuid(), responseId=uuid();
+const storageKey="amp-preference-participant:"+manifest.study_id;
+const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+let saved=null;
+try { saved=localStorage.getItem(storageKey); } catch (_) { /* file:// storage may be disabled */ }
+const participant=document.getElementById("participant");
+participant.value=saved && uuidPattern.test(saved) ? saved : uuid();
+document.getElementById("testBadge").hidden=!manifest.synthetic;
+document.getElementById("versions").textContent="研究："+manifest.study_id+"；版本："+manifest.study_version+"；分享同意版本："+manifest.consent_version+"；试听包："+manifest.bundle_id;
+const rows=[];
+const allAudio=[];
+shuffled(manifest.trials).forEach((trial,index)=>{
+  const assets=shuffled(trial.assets);
+  const state={trial_id:trial.trial_id,trial_sha256:trial.trial_sha256,position:index+1,a_asset_id:assets[0].asset_id,a_sha256:assets[0].sha256,b_asset_id:assets[1].asset_id,b_sha256:assets[1].sha256,choice:null,a_listened:false,b_listened:false};
+  rows.push(state);
+  const section=node("section"); section.append(node("h2","第 "+(index+1)+" / "+manifest.trials.length+" 题"));
+  const audios=node("div",undefined,"audios"); const radios=[];
+  const hint=node("p","请先听完 A 和 B，再选择；也可以直接跳过。","muted");
+  function updateChoices() {
+    const ready=state.a_listened && state.b_listened;
+    for(const radio of radios) radio.disabled=radio.value!=="skip" && !ready;
+    hint.textContent=ready ? "两段均已播放完成，可以选择或再次试听。" : "请先听完 A 和 B，再选择；也可以直接跳过。";
+  }
+  assets.forEach((asset,side)=>{
+    const cell=node("div"); cell.append(node("strong",side===0?"演奏 A":"演奏 B"));
+    const audio=node("audio"); audio.controls=true; audio.preload="none"; audio.src=asset.path; audio.setAttribute("aria-label",side===0?"播放演奏 A":"播放演奏 B");
+    audio.addEventListener("play",()=>{ for(const other of allAudio) if(other!==audio) other.pause(); });
+    audio.addEventListener("ended",()=>{ state[side===0?"a_listened":"b_listened"]=true; updateChoices(); });
+    audio.addEventListener("error",()=>{ hint.textContent="音频无法打开，请先完整解压并保留 assets 文件夹；此题可跳过。"; hint.className="error"; });
+    allAudio.push(audio); cell.append(audio); audios.append(cell);
+  });
+  section.append(audios,hint);
+  const fieldset=node("fieldset"); fieldset.append(node("legend","哪一段更自然、更愿意继续听？"));
+  for(const [value,text] of [["a","A 更好"],["b","B 更好"],["tie","无明显差别"],["skip","无法判断 / 跳过"]]) {
+    const label=node("label",undefined,"choice"), radio=node("input"); radio.type="radio"; radio.name=trial.trial_id; radio.value=value;
+    radio.addEventListener("change",()=>{ state.choice=value; }); radios.push(radio); label.append(radio,document.createTextNode(text)); fieldset.append(label);
+  }
+  const clear=node("button","清空选择"); clear.type="button"; clear.addEventListener("click",()=>{ state.choice=null; for(const radio of radios) radio.checked=false; });
+  section.append(fieldset,clear); document.getElementById("trials").append(section); updateChoices();
+});
+document.getElementById("export").addEventListener("click",()=>{
+  const status=document.getElementById("status"); status.className="status error";
+  if(!document.getElementById("consent").checked) { status.textContent="请先确认你愿意分享此答卷；未同意时不会导出。"; return; }
+  const participantId=participant.value.trim().toLowerCase();
+  if(!uuidPattern.test(participantId)) { status.textContent="请使用页面随机生成的匿名编号，或粘贴以前保存的完整编号。"; return; }
+  const result={schema:"auto_music_player.preference_responses",schema_version:1,study_id:manifest.study_id,study_version:manifest.study_version,bundle_id:manifest.bundle_id,manifest_sha256:manifest.manifest_sha256,consent_version:manifest.consent_version,participant_id:participantId,session_id:sessionId,response_id:responseId,synthetic:manifest.synthetic,consent:{accepted:true,version:manifest.consent_version,purpose:"research_preference_evaluation"},responses:rows};
+  try { localStorage.setItem(storageKey,participantId); } catch (_) { /* anonymity does not depend on storage */ }
+  const blob=new Blob([JSON.stringify(result,null,2)+"\n"],{type:"application/json"}), url=URL.createObjectURL(blob), link=node("a");
+  link.href=url; link.download="responses_"+manifest.bundle_id.slice(0,8)+"_"+responseId+".json"; document.body.append(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+  const selected=rows.filter(row=>row.choice!==null && row.choice!=="skip").length;
+  status.className="status"; status.textContent="已导出答卷（已选择 "+selected+" 题）。没有上传；请自行检查后交给组织者。答卷编号："+responseId;
+});
+</script>
+</body></html>

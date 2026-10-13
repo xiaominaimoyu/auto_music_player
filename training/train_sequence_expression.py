@@ -16,13 +16,16 @@ from torch.nn import functional as F
 from training.bar_objective import true_bar_objective
 from training.bar_supervision import DEFAULT_BAR_HORIZONS, validate_horizons
 from training.bar_windows import DEFAULT_MAX_WINDOW_CHORDS
-from training.midi_features import CHORD_FEATURE_NAMES, CHORD_TARGET_NAMES, NOTE_FEATURE_NAMES, NOTE_TARGET_NAMES
+from training.midi_features import CHORD_TARGET_NAMES, NOTE_TARGET_NAMES
+from training.piece_groups import group_membership, score_groups
 from training.rhythm_objective import DEFAULT_CUMULATIVE_SPANS, cumulative_ioi_loss, validate_spans
 from training.shape_features import SHAPE_FEATURE_NAMES
+from training.shared_profile import (DURATION_COLUMN as SHARED_DURATION_COLUMN, apply_shared_targets,
+                                     profile_coverage, shared_duration_targets)
 from training.sequence_expression import (
     BAR_WEIGHT_KEYS, BAR_WEIGHT_TO_COMPONENT, SequenceExpressionModel, SequenceSample, attach_bar_geometry,
-    bar_weight_total, collate_windows, fit_input_normalizers, load_selected_samples, make_model, make_windows,
-    make_windows_from_config, shuffle_training_targets, to_device,
+    bar_weight_total, chord_input_names, collate_windows, fit_input_normalizers, load_selected_samples,
+    make_model, make_windows, make_windows_from_config, note_input_names, shuffle_training_targets, to_device,
 )
 from training.train_expression import (
     TrainingRunError, _load_json, _load_sample_id_file, _load_validation_cache,
@@ -244,9 +247,15 @@ def train(*, dataset: str | Path, output: str | Path, architecture: str,
           bar_elapsed_weight: float = 0.0, bar_tempo_weight: float = 0.0, bar_local_weight: float = 0.0,
           bar_log_ratio_clip: float = 4.0, bar_minimum_elapsed_s: float = 1e-6,
           max_steps_per_epoch: int | None = None, cpu_threads: int | None = None,
-          duration_centering: bool = False, shape_features: bool = False) -> dict[str, Any]:
+          duration_centering: bool = False, shape_features: bool = False,
+          duration_target: str = "label") -> dict[str, Any]:
     if architecture not in {"mlp", "gru"}:
         raise TrainingRunError("architecture must be mlp or gru")
+    if duration_target not in {"label", "shared_profile"}:
+        raise TrainingRunError("duration_target must be label or shared_profile")
+    if duration_target == "shared_profile" and not duration_centering:
+        raise TrainingRunError("the shared profile is defined on median-centred labels; enabling it "
+                               "without --duration-centering would reintroduce the per-recording level")
     if min(epochs, batch_size, core_size, hidden_dim, patience) <= 0 or context_size < 0:
         raise TrainingRunError("invalid positive dimensions or negative context")
     if not 0 <= dropout < 1 or learning_rate <= 0 or weight_decay < 0:
@@ -297,10 +306,32 @@ def train(*, dataset: str | Path, output: str | Path, architecture: str,
     validation_report = (_load_validation_cache(dataset_root, validation_cache)
                          if validation_cache is not None else validate_dataset(dataset_root))
     reference = load_reference(timing_reference)
+    # one boolean at the CLI, but the run records the exact column block it used, so inference
+    # rebuilds this checkpoint's width even after the shipped block grows
+    shape_names = SHAPE_FEATURE_NAMES if shape_features else ()
     train_samples = load_selected_samples(dataset_root, "train", train_ids, timing_reference=reference,
-                                          duration_centering=duration_centering, shape_features=shape_features)
+                                          duration_centering=duration_centering, shape_feature_names=shape_names)
     validation_samples = load_selected_samples(dataset_root, "validation", validation_ids, timing_reference=reference,
-                                               duration_centering=duration_centering, shape_features=shape_features)
+                                               duration_centering=duration_centering, shape_feature_names=shape_names)
+    shared_profile: dict[str, Any] = {}
+    if duration_target == "shared_profile":
+        # The profile averages only over the *training* recordings of each piece: building it from
+        # any split the model is scored on would move the answer into the question.  Validation
+        # samples deliberately keep their own median-centred labels, so early stopping, the
+        # decomposition and the bootstrap all still judge the model against real performances.
+        membership = group_membership(score_groups(dataset_root / "manifest.jsonl", "train"), train_ids)
+        targets = shared_duration_targets(train_samples, membership)
+        train_samples = apply_shared_targets(train_samples, targets)
+        shared_profile = profile_coverage(targets)
+        if not shared_profile["shared_recordings"]:
+            # A development selection that holds one recording per piece makes this target
+            # unreachable: every group is "alone in this split", the override changes nothing, and
+            # the run would silently be a duplicate of the centred control while reporting itself
+            # as the shared-profile arm.  That is exactly how an experiment measures nothing and
+            # looks like it did, so it is refused here rather than noticed later.
+            raise TrainingRunError(
+                "shared duration target matched no multi-recording piece group in the train split; "
+                f"coverage was {shared_profile}")
     if window_policy == "bar":
         # Geometry is score-only and comes from the locked timing reference; it is
         # attached before any window is cut, so inference can rebuild the same plan.
@@ -309,8 +340,27 @@ def train(*, dataset: str | Path, output: str | Path, architecture: str,
         validation_samples = [attach_bar_geometry(sample, reference[str(sample.sample_id)], horizons=bar_horizons)
                               for sample in validation_samples]
     inputs = fit_input_normalizers(train_samples)
+    recorded_note_names = note_input_names(shape_names, has_timing_reference=reference is not None)
+    if len(recorded_note_names) != len(inputs["note_input_means"]):
+        # the name list and the fitted width are built from different code paths, so they can
+        # disagree; a checkpoint whose documented inputs do not match its tensor is unusable
+        # for anyone trying to reproduce it, which is exactly the mistake this guard ends
+        raise TrainingRunError(
+            f"recorded note input names ({len(recorded_note_names)}) do not match the fitted "
+            f"input width ({len(inputs['note_input_means'])})")
     normalizer = _load_json(dataset_root / "normalizer.json")
     nm, ns = _normalizer_vectors(normalizer, NOTE_TARGET_NAMES, "note_targets")
+    if duration_target == "shared_profile":
+        # The duration column is no longer the dataset's label distribution, so its standardisation
+        # has to be re-fitted on what the model is actually asked to predict.  Leaving the dataset's
+        # numbers in place would scale a cross-performer mean as if it were one noisy recording.
+        values = np.concatenate([np.asarray(sample.note_targets[
+            np.asarray(sample.note_masks[:, SHARED_DURATION_COLUMN], dtype=bool), SHARED_DURATION_COLUMN],
+            dtype=np.float64) for sample in train_samples])
+        if not values.size:
+            raise TrainingRunError("shared duration target has no supervised rows")
+        nm[SHARED_DURATION_COLUMN] = float(values.mean())
+        ns[SHARED_DURATION_COLUMN] = float(max(values.std(), 1e-6))
     cm, cs = _normalizer_vectors(normalizer, CHORD_TARGET_NAMES, "chord_targets")
     selected_device = _resolve_device(device)
     _seed_everything(seed)
@@ -331,7 +381,14 @@ def train(*, dataset: str | Path, output: str | Path, architecture: str,
                                      "applied to both splits so the metric stays in one unit system, and it never "
                                      "enters the inputs, so a fresh performance has no centre to remove"),
         "note_shape_features": bool(shape_features),
-        "note_shape_feature_names": list(SHAPE_FEATURE_NAMES) if shape_features else [],
+        "note_shape_feature_names": list(shape_names),
+        "duration_target": duration_target,
+        "duration_target_scope": ("shared_profile replaces the train split's duration target with each piece's "
+                                  "cross-performer mean of median-centred labels; validation keeps each recording's "
+                                  "own centred label, so every metric still answers to a real performance"
+                                  if duration_target == "shared_profile" else
+                                  "label: each recording is supervised against its own performance"),
+        "shared_profile_coverage": shared_profile or None,
         "relative_position": True, "input_fit_split": "selected train only",
         "quality_mask": None, "max_steps_per_epoch": max_steps_per_epoch,
         "cpu_threads": torch.get_num_threads(), "onset_weight": onset_weight,
@@ -364,8 +421,8 @@ def train(*, dataset: str | Path, output: str | Path, architecture: str,
         },
         "note_target_means": nm.tolist(), "note_target_scales": ns.tolist(),
         "chord_target_means": cm.tolist(), "chord_target_scales": cs.tolist(),
-        "note_features": list(NOTE_FEATURE_NAMES) + (["score_seconds_per_beat_log", "note_duration_tempo_log_ratio"] if reference is not None else []),
-        "chord_features": list(CHORD_FEATURE_NAMES) + (["score_seconds_per_beat_log", "chord_tempo_log_ratio"] if reference is not None else []),
+        "note_features": list(recorded_note_names),
+        "chord_features": list(chord_input_names(has_timing_reference=reference is not None)),
         "note_targets": list(NOTE_TARGET_NAMES), "chord_targets": list(CHORD_TARGET_NAMES),
         "timing_reference": str(Path(timing_reference).resolve()) if timing_reference is not None else None,
         "timing_reference_sha256": reference_hash(timing_reference),
@@ -381,7 +438,8 @@ def train(*, dataset: str | Path, output: str | Path, architecture: str,
     config["implementation_sha256"] = {name: _sha256(Path(__file__).parent / name)
                                        for name in ("sequence_expression.py", "train_sequence_expression.py",
                                                     "rhythm_objective.py", "bar_windows.py", "bar_objective.py",
-                                                    "bar_supervision.py", "shape_features.py")}
+                                                    "bar_supervision.py", "shape_features.py",
+                                                    "shared_profile.py", "piece_groups.py")}
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "_INCOMPLETE").write_text("sequence pilot in progress\n", encoding="ascii")
@@ -449,6 +507,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-shuffle", action="store_true")
     parser.add_argument("--duration-centering", action="store_true",
                         help="train on each recording's duration profile with its own level removed")
+    parser.add_argument("--duration-target", choices=("label", "shared_profile"), default="label",
+                        help="shared_profile supervises the train split on each piece's cross-performer mean "
+                             "shape rather than one noisy recording; requires --duration-centering, and the "
+                             "validation split keeps its own centred labels so the metrics stay honest")
     parser.add_argument("--shape-features", action="store_true",
                         help="append derived voice-continuity note columns (same-pitch gaps, voices still "
                              "sounding at each note's end); changes the input width, so inference must use "

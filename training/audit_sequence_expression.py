@@ -122,10 +122,10 @@ def audit(*, dataset: str | Path, checkpoint: str | Path, output: str | Path,
     if reference_hash(reference_path) != config.get("timing_reference_sha256"):
         raise TrainingRunError("audit timing reference does not match training contract")
     reference = load_reference(reference_path)
-    centre_duration, derive_shape, _relative = checkpoint_preparation_flags(config)
+    centre_duration, shape_names, _relative = checkpoint_preparation_flags(config)
     samples = load_selected_samples(dataset_root, "validation", sample_ids,
                                     timing_reference=reference, relative_position=bool(config["relative_position"]),
-                                    duration_centering=centre_duration, shape_features=derive_shape)
+                                    duration_centering=centre_duration, shape_feature_names=shape_names)
     samples = attach_checkpoint_bar_geometry(samples, reference, config)
     identities: dict[str, tuple[str, str]] = {}
     with (dataset_root / "manifest.jsonl").open("r", encoding="utf-8") as handle:

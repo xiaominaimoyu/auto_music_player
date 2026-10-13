@@ -128,7 +128,11 @@ def _contract_check(root: Path, registration: dict, jobs: list[dict], timing_roo
                     "learning_rate", "weight_decay"):
             if config[key] != registration[key]:
                 raise ValueError(f"run changed registered hyperparameter {key}")
-        if config["implementation_sha256"] != hashes:
+        # Compare the names this check actually computes, not the whole record: the trainer has
+        # been recording more implementation files than the three bound here, and a dictionary
+        # equality test made every current checkpoint fail its own contract check.
+        recorded = config["implementation_sha256"]
+        if not all(recorded.get(name) == digest for name, digest in hashes.items()):
             raise ValueError("sequence implementation changed across registered jobs")
         if config["quality_mask"] is not None or config["target_shuffle"]:
             raise ValueError("unregistered mask or shuffle")

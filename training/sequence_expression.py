@@ -19,7 +19,8 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from training.bar_supervision import BarSpans, build_bar_spans, validate_horizons
 from training.bar_windows import DEFAULT_MAX_WINDOW_CHORDS, bar_boundary_indices, plan_bar_windows
-from training.midi_features import CHORD_TARGET_NAMES, NOTE_TARGET_NAMES
+from training.midi_features import (CHORD_FEATURE_NAMES, CHORD_TARGET_NAMES, NOTE_FEATURE_NAMES,
+                                    NOTE_TARGET_NAMES)
 from training.shape_features import SHAPE_FEATURE_NAMES, derive_shape_features
 from training.train_expression import TrainingRunError, _selected_shard_paths
 
@@ -97,16 +98,42 @@ def bar_weight_total(config: Mapping[str, Any]) -> float:
     return sum(float(config.get(name, 0.0)) for name in BAR_WEIGHT_KEYS)
 
 
-def checkpoint_preparation_flags(config: Mapping[str, Any]) -> tuple[bool, bool, bool]:
+TIMING_NOTE_FEATURE_NAMES = ("score_seconds_per_beat_log", "note_duration_tempo_log_ratio")
+TIMING_CHORD_FEATURE_NAMES = ("score_seconds_per_beat_log", "chord_tempo_log_ratio")
+
+
+def note_input_names(shape_feature_names: Sequence[str] = (), *,
+                     has_timing_reference: bool = True) -> tuple[str, ...]:
+    """The note input columns in exactly the order ``prepare_sample`` writes them.
+
+    The shape block sits between the score features and the timing-reference columns, so a
+    run's input contract has to be assembled here instead of being guessed by whoever reads
+    ``run_config.json``: a recorded name list that disagrees with the fitted width is how a
+    checkpoint ends up documenting the wrong features, and the 15-epoch shape arms of
+    2026-10-11 were recorded that way (17 names for a 23-column input).
+    """
+    names = tuple(NOTE_FEATURE_NAMES) + tuple(shape_feature_names)
+    return names + (TIMING_NOTE_FEATURE_NAMES if has_timing_reference else ())
+
+
+def chord_input_names(*, has_timing_reference: bool = True) -> tuple[str, ...]:
+    names = tuple(CHORD_FEATURE_NAMES)
+    return names + (TIMING_CHORD_FEATURE_NAMES if has_timing_reference else ())
+
+
+def checkpoint_preparation_flags(config: Mapping[str, Any]) -> tuple[bool, tuple[str, ...], bool]:
     """The input/target transforms a checkpoint was trained under, read back out of its config.
 
-    Sample preparation must match the checkpoint exactly: a shape-feature run carries three
-    extra input columns, and feeding it legacy-width samples fails on a broadcast error
-    instead of producing a number.  Returns ``(duration_centering, shape_features,
-    relative_position)``.
+    Sample preparation must match the checkpoint exactly: a shape-feature run carries extra
+    input columns, and feeding it differently-wide samples fails on a broadcast error instead
+    of producing a number.  The shape block is identified by its column names rather than a
+    version counter, so widening the block later cannot silently reinterpret an older
+    checkpoint.  Returns ``(duration_centering, shape_feature_names, relative_position)``.
     """
-    return (bool(config.get("duration_center_per_sample", False)),
-            bool(config.get("note_shape_features", False)),
+    names = tuple(config.get("note_shape_feature_names") or ())
+    if bool(config.get("note_shape_features", False)) and not names:
+        raise TrainingRunError("checkpoint enabled note shape features without recording their names")
+    return (bool(config.get("duration_center_per_sample", False)), names,
             bool(config.get("relative_position", True)))
 
 
@@ -117,7 +144,7 @@ def prepare_sample(
     timing_reference: Mapping[str, Any] | None = None,
     relative_position: bool = True,
     duration_centering: bool = False,
-    shape_features: bool = False,
+    shape_feature_names: Sequence[str] = (),
 ) -> SequenceSample:
     """Prepare one sample whose note_to_chord is already sample-local."""
     note = np.asarray(arrays["note_features"], dtype=np.float32).copy()
@@ -129,7 +156,8 @@ def prepare_sample(
         raise TrainingRunError(f"{sample_id}: note_to_chord escapes sample")
     # derived while beats are still in score units: the shape columns need absolute
     # distances, and ``relative_position`` below rewrites column 3 in place
-    derived_shape = derive_shape_features(note, chord[:, 0]) if shape_features else None
+    derived_shape = (derive_shape_features(note, chord[:, 0], mapping, tuple(shape_feature_names))
+                     if len(shape_feature_names) else None)
     if relative_position:
         lo, hi = float(chord[0, 0]), float(chord[-1, 0])
         span = max(hi - lo, 1e-6)
@@ -219,7 +247,7 @@ def load_selected_samples(
     timing_reference: Mapping[str, Mapping[str, Any]] | None = None,
     relative_position: bool = True,
     duration_centering: bool = False,
-    shape_features: bool = False,
+    shape_feature_names: Sequence[str] = (),
 ) -> list[SequenceSample]:
     """Load only approved performances and remap their ragged indices."""
     paths = _selected_shard_paths(dataset_root, split, sample_ids)
@@ -258,7 +286,7 @@ def load_selected_samples(
             samples.append(prepare_sample(sample_id, selected, timing_reference=reference,
                                           relative_position=relative_position,
                                           duration_centering=duration_centering,
-                                          shape_features=shape_features))
+                                          shape_feature_names=shape_feature_names))
     if found != set(sample_ids):
         raise TrainingRunError("selected sample loading did not cover all approved IDs")
     return sorted(samples, key=lambda sample: sample.sample_id)
@@ -515,7 +543,7 @@ def predict_sample(model: SequenceExpressionModel, arrays: SequenceSample | Mapp
                                 timing_reference=timing_reference,
                                 relative_position=bool(config.get("relative_position", True)),
                                 duration_centering=bool(config.get("duration_center_per_sample", False)),
-                                shape_features=bool(config.get("note_shape_features", False)))
+                                shape_feature_names=tuple(config.get("note_shape_feature_names") or ()))
     selected_device = torch.device(device)
     model.eval()
     note_output = np.empty_like(sample.note_targets)

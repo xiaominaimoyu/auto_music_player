@@ -31,7 +31,6 @@ split.
 from __future__ import annotations
 
 import argparse
-import collections
 import json
 from pathlib import Path
 import sys
@@ -42,6 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import numpy as np
 
+from training.piece_groups import score_groups, select_performances
 from training.sequence_expression import load_selected_samples
 from training.train_expression import TrainingRunError, _sha256, _write_json
 
@@ -59,51 +59,9 @@ NOTE_CHANNELS = (("log_key_duration_ratio", "note", 1), ("micro_offset_ms", "not
 CHANNELS = tuple(name for name, _source, _column in CHORD_CHANNELS)
 
 
-def score_groups(manifest_path: Path, split: str) -> list[tuple[str, list[dict[str, object]]]]:
-    """Groups of two or more accepted performances of one score, with identical chord counts.
-
-    Identical chord counts are required because positions are matched index by index; a
-    group whose performances disagree on length cannot be aligned without a second
-    alignment pass, which this probe deliberately does not attempt.
-    """
-    groups: dict[str, list[dict[str, object]]] = collections.defaultdict(list)
-    with manifest_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if str(row.get("split")) != split:
-                continue
-            if str(row.get("qc_status")) not in {"", "accepted", "ok"}:
-                continue
-            group = str(row.get("piece_group") or "")
-            if not group:
-                continue
-            groups[group].append({"id": str(row["id"]), "performer": str(row.get("performer") or ""),
-                                  "chord_count": int(row.get("chord_count") or 0)})
-    eligible = []
-    for group, rows in groups.items():
-        if len(rows) < 2:
-            continue
-        if len({int(row["chord_count"]) for row in rows}) != 1:
-            continue
-        eligible.append((group, sorted(rows, key=lambda row: row["id"])))
-    return sorted(eligible, key=lambda item: item[0])
-
-
-def select_performances(rows: list[dict[str, object]], cap: int) -> list[str]:
-    """Take at most ``cap`` performances, no two from the same ``performer``.
-
-    Deterministic: for each performer the lowest sample id wins, and the performer buckets
-    are sorted, so the same manifest always yields the same selection.  An empty
-    ``performer`` collapses into one bucket, which is conservative -- several unnamed
-    recordings are treated as a single possible person rather than as independent evidence.
-    Every pair produced downstream is therefore two different performers by construction.
-    """
-    buckets: dict[str, str] = {}
-    for row in sorted(rows, key=lambda row: (str(row["performer"]), str(row["id"]))):
-        buckets.setdefault(str(row["performer"]), str(row["id"]))
-    return [buckets[performer] for performer in sorted(buckets)[:cap]]
+# ``score_groups`` and ``select_performances`` moved to ``training.piece_groups`` when the
+# shared-profile training target started consuming the same eligibility rules: one implementation,
+# so the probe and the training target cannot drift apart while claiming to measure the same thing.
 
 
 def chord_labels(sample, notes_to_chord: np.ndarray) -> dict[str, np.ndarray]:

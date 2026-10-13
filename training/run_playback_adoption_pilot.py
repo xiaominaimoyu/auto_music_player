@@ -154,7 +154,11 @@ def verify_registered_job(run_root: Path, job: dict, registration: dict,
         if config.get(config_key) != expected:
             raise ValueError(f"child changed registered fingerprint {config_key}")
     expected_implementation = {name: registration["implementation_sha256"][name] for name in TRAIN_IMPLEMENTATION_NAMES}
-    if config.get("implementation_sha256") != expected_implementation:
+    # the trainer records more implementation files than the pilot binds, so compare the bound
+    # names rather than the whole dictionary -- full equality fails any checkpoint that records
+    # extra files without any of the bound ones having changed
+    recorded_implementation = config.get("implementation_sha256") or {}
+    if not all(recorded_implementation.get(name) == digest for name, digest in expected_implementation.items()):
         raise ValueError("child changed registered training implementation")
     if report is not None:
         checkpoint = (run_root / "checkpoint_best.pt").resolve()
