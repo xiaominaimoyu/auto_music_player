@@ -252,5 +252,40 @@ class TestDotAloneLow(unittest.TestCase):
         self.assertEqual(r, [{"notes": ["high_1"], "dur": 1.0, "semitone": 1}])
 
 
+class TestStandardDialect(unittest.TestCase):
+    def test_community_dash_and_dot_stay_unchanged(self):
+        self.assertEqual([n["dur"] for n in parse_jianpu("5- 5--")], [2.0, 4.0])
+        self.assertEqual(parse_jianpu("5.")[0]["notes"], ["low_5"])
+
+    def test_standard_dash_adds_one_beat_and_dot_is_dotted(self):
+        notes, errors = parse_jianpu("5- 5-- 5.", dialect="standard", collect=True)
+        self.assertEqual([n["dur"] for n in notes], [2.0, 3.0, 1.5])
+        self.assertEqual(notes[2]["notes"], ["mid_5"])
+        self.assertEqual(errors, [])
+
+    def test_extension_line_and_tie_and_triplet(self):
+        text = "5\n--\n1~ 1\n{1 2 3}"
+        notes = parse_jianpu(text, dialect="standard")
+        self.assertAlmostEqual(notes[0]["dur"], 3.0)
+        self.assertEqual(notes[1]["notes"], ["mid_1"])
+        self.assertAlmostEqual(notes[1]["dur"], 2.0)
+        self.assertEqual(len(notes), 5)
+        self.assertTrue(all(abs(n["dur"] - 1.0 / 3.0) < 1e-9 for n in notes[2:]))
+
+    def test_flat_becomes_enharmonic_and_warns(self):
+        notes, errors = parse_jianpu("b3 ♭1", dialect="standard", collect=True)
+        self.assertEqual(notes[0], {"notes": ["mid_2"], "dur": 1.0, "semitone": 1})
+        self.assertEqual(notes[1]["notes"], ["low_7"])
+        self.assertTrue(errors)
+
+    def test_extra_octave_marks_warn_without_dropping_the_note(self):
+        notes, errors = parse_jianpu("1''", dialect="standard", collect=True)
+        self.assertEqual(notes[0]["notes"], ["high_1"])
+        self.assertTrue(any("八度" in error.reason for error in errors))
+        community, community_errors = parse_jianpu("1''", collect=True)
+        self.assertEqual(community[0]["notes"], ["high_1"])
+        self.assertTrue(community_errors)
+
+
 if __name__ == "__main__":
     unittest.main()

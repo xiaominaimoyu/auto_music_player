@@ -263,7 +263,9 @@ def main():
             jitter_ms=float(humanize_cfg.get("jitter_ms", 12.0)),
             breath_ms=float(humanize_cfg.get("breath_ms", 25.0)),
             jitter_correlation=float(humanize_cfg.get("jitter_correlation", 0.65)),
-            # 保持默认值,不在 config 暴露过多旋钮
+            tempo_arc_ms=float(humanize_cfg.get("tempo_arc_ms", 8.0)),
+            accent_ms=float(humanize_cfg.get("accent_ms", 4.0)),
+            strum_ms=float(humanize_cfg.get("strum_ms", 12.0)),
         )
     # 两条播放路径共用同一个事件日志目录/会话格式，记录页才能同时看到
     # 默认 21 键与三角洲口琴演奏；PlayLogger 继续保留本地统计兼容文件。

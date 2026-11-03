@@ -60,7 +60,16 @@ class Score:
         for item in items:
             dur = float(item["dur"])
             semitone = int(item.get("semitone", 0))
-            notes = tuple(_note_from_id(nid, dur, semitone) for nid in item.get("notes") or [])
+            per_note = item.get("semitones")
+            ids = list(item.get("notes") or [])
+            notes = tuple(
+                _note_from_id(
+                    nid,
+                    dur,
+                    int(per_note[note_index]) if per_note else semitone,
+                )
+                for note_index, nid in enumerate(ids)
+            )
             if not notes:
                 elements.append(Rest(dur))
             elif len(notes) == 1:
@@ -81,8 +90,11 @@ class Score:
                 out.append(item)
             elif isinstance(el, Chord):
                 item = {"notes": [n.note_id for n in el.notes], "dur": el.dur}
-                if any(n.semitone for n in el.notes):
+                semitones = [int(n.semitone) for n in el.notes]
+                if any(semitones) and len(set(semitones)) == 1:
                     item["semitone"] = 1
+                elif any(semitones):
+                    item["semitones"] = semitones
                 out.append(item)
             else:
                 raise TypeError(f"未知音符类型: {type(el)!r}")
@@ -169,4 +181,13 @@ def _validate_item(i: int, item) -> list:
         semi = item["semitone"]
         if isinstance(semi, bool) or not isinstance(semi, (int, float)) or int(semi) not in (0, 1):
             errors.append(ValidationError(i, "半音标记必须为 0 或 1"))
+    if "semitones" in item:
+        values = item["semitones"]
+        if not isinstance(ids, list) or not isinstance(values, list) or len(values) != len(ids):
+            errors.append(ValidationError(i, "semitones 必须与 notes 等长"))
+        else:
+            for value in values:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) not in (0, 1):
+                    errors.append(ValidationError(i, "semitones 里的每个值必须是 0 或 1"))
+                    break
     return errors

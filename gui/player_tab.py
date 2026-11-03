@@ -187,6 +187,20 @@ class PlayerTab(QWidget):
                 jitter_ms=float(humanize_cfg.get("jitter_ms", 12.0)),
                 breath_ms=float(humanize_cfg.get("breath_ms", 25.0)),
                 jitter_correlation=float(humanize_cfg.get("jitter_correlation", 0.65)),
+                tempo_arc_ms=float(humanize_cfg.get("tempo_arc_ms", 8.0)),
+                accent_ms=float(humanize_cfg.get("accent_ms", 4.0)),
+                strum_ms=float(humanize_cfg.get("strum_ms", 12.0)),
+            )
+        self._midi_humanize = None
+        if self._humanize_params is not None:
+            self._midi_humanize = replace(
+                self._humanize_params,
+                jitter_ms=min(4.0, self._humanize_params.jitter_ms),
+                breath_ms=0.0,
+                leap_ms=0.0,
+                tempo_arc_ms=min(3.0, self._humanize_params.tempo_arc_ms),
+                accent_ms=min(2.0, self._humanize_params.accent_ms),
+                strum_ms=0.0,
             )
         self._score_id = None
         self._had_error = False
@@ -1151,10 +1165,11 @@ class PlayerTab(QWidget):
         self._active_source_start = prepared.source_start
         self._active_source_type = "midi" if _is_midi_score(score) else (score.get("source_type") or "")
         imported_timeline = self._active_source_type == "midi"
-        # MIDI 已按绝对时间线入库；额外 gap 和真人化抖动会逐元素累积，
-        # 对短音密集歌曲造成明显改拍。导入谱演奏时保持原始时间线。
+        # MIDI 不再加 gap。真人化只用很小的、整句回零的偏移，避免短音密集时改拍。
         self._playback_gap_ms = 0.0 if imported_timeline else self._gap_ms
-        self._playback_humanize = None if imported_timeline else self._humanize_params
+        self._playback_humanize = (
+            self._midi_humanize if imported_timeline else self._humanize_params
+        )
         start_index = self._paused_done if self._paused_done > 0 else 0
         if start_index > 0:
             # 暂停续播沿用原会话 seed，保证 Legacy/Delta 不重新掷骰子。

@@ -17,7 +17,7 @@ import time
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.event_logger import NoteEvent
-from core.humanize import make_seed, plan_timings
+from core.humanize import make_seed, plan_timings, timing_parts
 from core.keyboard_driver import KeyboardDriver
 from core.timing import high_resolution_period, slot_hold_and_advance, wait_until
 
@@ -131,6 +131,28 @@ class Player(QObject):
             t.join(join_timeout)
             self._release_all()
 
+    def _strum_chord(self, keys, strum_ms, index):
+        """和弦在 8–25ms 内扫过，方向逐个和弦交替，避免永远从低到高。"""
+        order = list(keys)
+        if index % 2:
+            order.reverse()
+        step_s = (min(25.0, max(8.0, float(strum_ms))) / max(1, len(order) - 1)) / 1000.0
+        pressed = []
+        try:
+            for nth, key in enumerate(order):
+                if nth and wait_until(
+                    self._stop_event,
+                    time.perf_counter() + step_s,
+                    precise=self._precise_wait,
+                ):
+                    break
+                self._driver.press_key(key)
+                pressed.append(key)
+        except Exception:
+            if pressed and hasattr(self._driver, "release_chord"):
+                self._driver.release_chord(pressed)
+            raise
+
     def _release_all(self):
         """保险:演奏结束/暂停/被停止/进程退出时松开所有可能按住的键。"""
         for octave in ("high", "mid", "low"):
@@ -212,10 +234,11 @@ class Player(QObject):
             dur_ms = float(note["dur"]) * beat_ms
             followed = index + 1 < total and bool(notes[index + 1].get("notes"))
             if timings is not None:
-                _off, ratio_i = timings[index]
+                _off, ratio_i, pull_ms = timing_parts(timings[index])
                 ratio = hold_ratio if ratio_i is None else float(ratio_i)
             else:
                 ratio = hold_ratio
+                pull_ms = 0.0
             if not note.get("notes"):
                 advance_i = dur_ms + gap_value if self._additive_gap else dur_ms
                 holds_ms.append(0.0)
@@ -228,7 +251,7 @@ class Player(QObject):
                     additive=self._additive_gap,
                     followed_by_attack=followed,
                 )
-                holds_ms.append(hold_i)
+                holds_ms.append(max(0.0, hold_i - pull_ms))
                 advances_ms.append(advance_i)
         pre_s = sum(advances_ms[:start_index]) / 1000.0
         t0 = time.perf_counter() - pre_s
@@ -247,7 +270,7 @@ class Player(QObject):
                     keys = [k for k in keys if k]
                     if timings is not None:
                         # plan_timings 的偏移单位是毫秒;这里的目标时间轴是秒。
-                        off_ms, _ratio_i = timings[i]
+                        off_ms, _ratio_i, _pull_ms = timing_parts(timings[i])
                         off_s = float(off_ms) / 1000.0
                     else:
                         off_s = 0.0
@@ -270,7 +293,13 @@ class Player(QObject):
                     try:
                         if keys:
                             self._require_dispatch_allowed()
-                            self._driver.press_chord(keys)
+                            strum_ms = 0.0
+                            if humanize is not None and len(keys) > 1:
+                                strum_ms = float(getattr(humanize, "strum_ms", 0.0) or 0.0)
+                            if strum_ms > 0:
+                                self._strum_chord(keys, strum_ms, i)
+                            else:
+                                self._driver.press_chord(keys)
                             hold_interrupted = wait_until(
                                 self._stop_event,
                                 time.perf_counter() + hold_s,

@@ -12,6 +12,7 @@
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
+from core.humanize import timing_parts
 from core.ir import IRChord, IRNote, IRRest, OCTAVE_TO_NAME
 
 MAX_BPM = 300
@@ -279,9 +280,9 @@ def _schedule_legacy(plan, params, timings, degradations, skipped) -> CompileRes
             continue
 
         if timings is not None:
-            off_ms, ratio_i = timings[item["index"]]
+            off_ms, ratio_i, pull_ms = timing_parts(timings[item["index"]])
         else:
-            off_ms, ratio_i = 0.0, params.hold_ratio
+            off_ms, ratio_i, pull_ms = 0.0, params.hold_ratio, 0.0
         nominal_t = cursor
         t = max(0.0, nominal_t + float(off_ms))
         # 链式防叠键:仅真人化模式需要——偏移可能把起音提前到上一音释放之前;
@@ -303,7 +304,9 @@ def _schedule_legacy(plan, params, timings, degradations, skipped) -> CompileRes
             held = button
 
         dur_ms = item["dur"] * beat_ms
-        hold = dur_ms * float(ratio_i)
+        hold = dur_ms * float(ratio_i) - float(pull_ms)
+        if hold < _MIN_HOLD_MS:
+            hold = _MIN_HOLD_MS if dur_ms >= _MIN_HOLD_MS else max(0.0, dur_ms)
         if params.max_hold_ms is not None and hold > float(params.max_hold_ms):
             hold = float(params.max_hold_ms)
             result.degradations.append(Degradation(
@@ -369,11 +372,11 @@ class _Placed:
 
 def _offset_and_ratio(item, timings, params):
     if timings is None:
-        return 0.0, float(params.hold_ratio)
-    off, ratio = timings[item["index"]]
+        return 0.0, float(params.hold_ratio), 0.0
+    off, ratio, pull = timing_parts(timings[item["index"]])
     if ratio is None:
         ratio = params.hold_ratio
-    return float(off), float(ratio)
+    return float(off), float(ratio), float(pull)
 
 
 def _transition_lead(held, button, settle, release_settle):
@@ -435,7 +438,7 @@ def _schedule_faithful(plan, params, timings, degradations, skipped) -> CompileR
                 if item["kind"] == "note":
                     break
                 continue
-            off, _ = _offset_and_ratio(item, timings, params)
+            off, _, _pull = _offset_and_ratio(item, timings, params)
             earliest_key = musical[index] + off
             if earliest_key < settle:
                 shift = settle - earliest_key
@@ -454,7 +457,7 @@ def _schedule_faithful(plan, params, timings, degradations, skipped) -> CompileR
             held = None
             continue
 
-        off, ratio = _offset_and_ratio(item, timings, params)
+        off, ratio, pull_ms = _offset_and_ratio(item, timings, params)
         dur_ms = float(item["dur"]) * beat_ms
         desired = dur_ms * ratio
         if params.max_hold_ms is not None and desired > float(params.max_hold_ms):
@@ -506,8 +509,7 @@ def _schedule_faithful(plan, params, timings, degradations, skipped) -> CompileR
                 hold = desired
         else:
             hold = desired
-        if hold < 0.0:
-            hold = 0.0
+        hold = max(0.0, hold - float(pull_ms))
 
         nxt = next_item
         source_end = nxt is None or nxt["source_index"] != item["source_index"]
