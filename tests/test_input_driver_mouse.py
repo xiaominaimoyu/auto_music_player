@@ -20,23 +20,39 @@ class _StubUser32:
         self.send_result = 1
 
     def SendInput(self, n, ptr, size):
-        # 生产代码用 ctypes.byref(...) 传参,得到的是 CArgObject;
-        # 其 _obj 回指原 INPUT 实例,从而无需为测试改动生产代码。
-        inp = getattr(ptr, "_obj", None)
-        if inp is None:
-            inp = ptr.contents
-        if inp.type == kd.INPUT_KEYBOARD:
-            self.calls.append({
-                "device": "kb",
-                "wScan": inp.ki.wScan,
-                "flags": inp.ki.dwFlags,
-            })
-        else:
-            self.calls.append({
-                "device": "mouse",
-                "flags": inp.mi.dwFlags,
-            })
-        return self.send_result
+        # 单键用 ctypes.byref；和弦用 INPUT 数组一次送出。
+        count = int(n)
+        for index in range(count):
+            inp = self._input_at(ptr, index)
+            if inp.type == kd.INPUT_KEYBOARD:
+                self.calls.append({
+                    "device": "kb",
+                    "wScan": inp.ki.wScan,
+                    "flags": inp.ki.dwFlags,
+                    "batch": count,
+                })
+            else:
+                self.calls.append({
+                    "device": "mouse",
+                    "flags": inp.mi.dwFlags,
+                    "batch": count,
+                })
+        if self.send_result == 0:
+            return 0
+        return count
+
+    @staticmethod
+    def _input_at(ptr, index):
+        obj = getattr(ptr, "_obj", None)
+        if obj is not None:
+            try:
+                return obj[index]
+            except (TypeError, IndexError):
+                return obj
+        try:
+            return ptr[index]
+        except (TypeError, IndexError):
+            return ptr.contents
 
     def VkKeyScanW(self, ch):
         return ord(chr(ch).upper())
@@ -209,17 +225,27 @@ class TestPlatformAndRegression(_MouseDriverTestCase):
     def test_press_key_regression_unchanged(self):
         """既有键盘路径行为必须与改造前一致(Q → wScan=81, flags=SCANCODE)。"""
         self.driver.press_key("Q")
-        self.assertEqual(self.stub.calls, [{"device": "kb", "wScan": 81, "flags": 8}])
+        self.assertEqual(self.stub.calls, [{"device": "kb", "wScan": 81, "flags": 8, "batch": 1}])
 
     def test_release_key_regression_unchanged(self):
         self.driver.release_key("Q")
-        self.assertEqual(self.stub.calls, [{"device": "kb", "wScan": 81, "flags": 8 | 2}])
+        self.assertEqual(self.stub.calls, [{"device": "kb", "wScan": 81, "flags": 8 | 2, "batch": 1}])
 
-    def test_chord_still_uses_chord_interval(self):
+    def test_chord_is_one_batched_sendinput(self):
+        """和弦默认一次 SendInput 同时按下，不再逐键睡 5ms。"""
         sleeps = []
         with mock.patch.object(kd.time, "sleep", side_effect=lambda s: sleeps.append(s * 1000.0)):
             self.driver.press_chord(["A", "S", "D"])
-        self.assertEqual(sleeps, [5.0, 5.0], "和弦内间隔仍为 CHORD_INTERVAL_MS=5")
+        self.assertEqual(sleeps, [])
+        self.assertEqual([call["wScan"] for call in self.stub.calls], [65, 83, 68])
+        self.assertEqual({call["batch"] for call in self.stub.calls}, {3})
+
+    def test_legacy_chord_keeps_5ms_interval(self):
+        driver = KeyboardDriver(batch_chords=False)
+        sleeps = []
+        with mock.patch.object(kd.time, "sleep", side_effect=lambda s: sleeps.append(s * 1000.0)):
+            driver.press_chord(["A", "S", "D"])
+        self.assertEqual(sleeps, [5.0, 5.0])
 
 
 if __name__ == "__main__":

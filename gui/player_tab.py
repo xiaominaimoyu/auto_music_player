@@ -29,6 +29,7 @@ from core.practice import PracticeSession, build_dual_rail_hint, build_practice_
 from core.preview_player import PreviewPlayer
 from core.profile import resolve_profile
 from core.scenario import SCENARIOS, get_scenario
+from core.timing import TimingConfig, timing_config
 from core.transport import MIN_GAME_NOTE_MS, normalize_transport_preferences, prepare_score
 from core.window_monitor import FocusLockPolicy, ForegroundWatcher
 from core.windows_reliability import inspect_target_elevation
@@ -70,6 +71,7 @@ def build_event_plan(
     humanize=None,
     humanize_seed=None,
     source_index_offset=0,
+    timing: TimingConfig | None = None,
 ):
     """事件路径(三角洲档位):谱面 → (ScenarioPlan, 降级清单)。
 
@@ -88,6 +90,13 @@ def build_event_plan(
         hold_ratio=hold_ratio,
         max_hold_ms=None,
         gap_ms=gap_ms,
+    )
+    chosen = timing or TimingConfig()
+    params = replace(
+        params,
+        modifier_prepress=chosen.modifier_prepress,
+        additive_gap=chosen.additive_gap,
+        legacy_timing=chosen.legacy_timing,
     )
     params = scenario.apply_intervals(params)
     timings = None
@@ -168,6 +177,7 @@ class PlayerTab(QWidget):
         self._gap_ms = float(player_cfg.get("gap_ms", 20))
         self._settle_ms = float(player_cfg.get("modifier_settle_ms", 30))
         self._release_settle_ms = float(player_cfg.get("modifier_release_ms", 20))
+        self._timing = timing_config(player_cfg)
         # 真人化节奏参数:从配置读取,供事件路径使用
         humanize_cfg = player_cfg.get("humanize") or {}
         humanize_enabled = bool(humanize_cfg.get("enabled", True))
@@ -1282,6 +1292,7 @@ class PlayerTab(QWidget):
             humanize=self._playback_humanize,
             humanize_seed=self._humanize_seed,
             source_index_offset=start_index,
+            timing=self._timing,
         )
         self._event_degradation_count = len(degradations)
         self._event_player.play(
