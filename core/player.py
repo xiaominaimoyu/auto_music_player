@@ -19,6 +19,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from core.event_logger import NoteEvent
 from core.humanize import make_seed, plan_timings
 from core.keyboard_driver import KeyboardDriver
+from core.timing import high_resolution_period, slot_hold_and_advance, wait_until
 
 
 _USE_CONFIGURED_HUMANIZE = object()
@@ -31,13 +32,16 @@ class Player(QObject):
     error_occurred = pyqtSignal(str)     # 演奏过程中的错误信息
 
     def __init__(self, keymap, driver=None, logger=None, latency_compensation_ms=0,
-                 humanize=None, parent=None, *, event_logger=None):
+                 humanize=None, parent=None, *, event_logger=None,
+                 precise_wait=True, additive_gap=False):
         super().__init__(parent)
         self._keymap = keymap
         self._driver = driver or KeyboardDriver()
         self._logger = logger
         self.latency_compensation_ms = max(0.0, float(latency_compensation_ms))
         self._humanize = humanize      # HumanizeParams;None = 关闭真人化
+        self._precise_wait = bool(precise_wait)
+        self._additive_gap = bool(additive_gap)
         self._event_logger = event_logger
         self._stop_event = threading.Event()
         self._thread = None
@@ -156,7 +160,6 @@ class Player(QObject):
         normal = False
         error = None
         comp_s = max(0.0, min(self.latency_compensation_ms, 200.0)) / 1000.0
-        gap_s = (gap_ms if gap_ms > 0 else 0.0) / 1000.0
         # 真人化节奏:一次会话只生成一枚 seed，供日志、Legacy 和 Delta 重放。
         # None 时全部按 0 偏移 + 固定 hold_ratio,与历史机械行为完全一致。
         humanize = (
@@ -201,61 +204,108 @@ class Player(QObject):
 
         # 绝对时钟调度:每个音符的目标开始时刻 = t0 + 前置音符时值槽之和 - 补偿量。
         # 到点即发,节奏不随音符数累积漂移;start_index 之前的音符同样计入时间轴。
-        pre_s = sum(n["dur"] * beat_ms / 1000.0 + gap_s for n in notes[:start_index])
+        # gap 默认从时值里扣成松开间隙,起音间隔仍等于谱面时值。
+        gap_value = gap_ms if gap_ms > 0 else 0.0
+        advances_ms = []
+        holds_ms = []
+        for index, note in enumerate(notes):
+            dur_ms = float(note["dur"]) * beat_ms
+            followed = index + 1 < total and bool(notes[index + 1].get("notes"))
+            if timings is not None:
+                _off, ratio_i = timings[index]
+                ratio = hold_ratio if ratio_i is None else float(ratio_i)
+            else:
+                ratio = hold_ratio
+            if not note.get("notes"):
+                advance_i = dur_ms + gap_value if self._additive_gap else dur_ms
+                holds_ms.append(0.0)
+                advances_ms.append(advance_i)
+            else:
+                hold_i, advance_i = slot_hold_and_advance(
+                    dur_ms,
+                    ratio,
+                    gap_value,
+                    additive=self._additive_gap,
+                    followed_by_attack=followed,
+                )
+                holds_ms.append(hold_i)
+                advances_ms.append(advance_i)
+        pre_s = sum(advances_ms[:start_index]) / 1000.0
         t0 = time.perf_counter() - pre_s
         cursor_s = pre_s
-        prev_release_s = None    # 上一发音音符的实际释放时刻(链式防叠键下限)
+        prev_release_s = None    # 上一发音音符的计划释放时刻(链式防叠键下限)
         prev_start_t = None    # 上一音符实际开始时刻(测量实际间隔)
-        prev_sched_ms = None   # 上一音符到本音符的理论间隔(dur + gap)
+        prev_sched_ms = None   # 上一音符到本音符的理论间隔
         try:
-            for i in range(start_index, total):
-                if self._stop_event.is_set():
-                    break
-                note = notes[i]
-                dur_ms = note["dur"] * beat_ms
-                keys = [self._keymap.key_for(nid) for nid in note["notes"]]
-                keys = [k for k in keys if k]
-                if timings is not None:
-                    # plan_timings 的偏移单位是毫秒;这里的目标时间轴是秒。
-                    # 未转换会把默认 12ms 抖动/25ms 呼吸放大 1000 倍,
-                    # 让传统 Player 在人性化开启时出现数秒甚至更久的停顿。
-                    off_ms, ratio_i = timings[i]
-                    off_s = float(off_ms) / 1000.0
-                else:
-                    off_s, ratio_i = 0.0, hold_ratio
-                # 目标起音 = 理想时刻 + 人性化偏移;链式保护:不早于上一音完全释放
-                target_s = t0 + cursor_s + off_s
-                if prev_release_s is not None and keys:
-                    target_s = max(target_s, prev_release_s + min_gap_s)
-                wait_s = target_s - comp_s - time.perf_counter()
-                if wait_s > 0:
-                    interrupted = self._stop_event.wait(wait_s)
-                else:
-                    # 已到点(或落后于进度):直接发送;停止信号则在此退出
-                    interrupted = self._stop_event.is_set()
-                if interrupted:
-                    break  # 停止信号在音符开始前到达:断点留在 i,续播重放
-                start_t = time.perf_counter()
-                actual_ms = (start_t - prev_start_t) * 1000.0 if prev_start_t is not None else None
-                dev_ms = (actual_ms - prev_sched_ms) if actual_ms is not None and prev_sched_ms is not None else None
-                error_msg = None
-                try:
-                    if keys:
-                        self._require_dispatch_allowed()
-                        self._driver.press_chord(keys)
-                        hold_interrupted = self._stop_event.wait(dur_ms * ratio_i / 1000.0)
-                        self._driver.release_chord(keys)
-                        prev_release_s = target_s + dur_ms * ratio_i / 1000.0
-                        if hold_interrupted:
-                            break  # 按住期被截断:断点留在 i,续播时重放该音符(不记日志)
-                    # 休止:时值由下一音符的绝对开始点体现,无需单独等待
-                except Exception as e:
-                    # 先记录失败再抛出,保持原有的中止行为
-                    error_msg = str(e)
+            with high_resolution_period(1):
+                for i in range(start_index, total):
+                    if self._stop_event.is_set():
+                        break
+                    note = notes[i]
+                    dur_ms = note["dur"] * beat_ms
+                    keys = [self._keymap.key_for(nid) for nid in note["notes"]]
+                    keys = [k for k in keys if k]
+                    if timings is not None:
+                        # plan_timings 的偏移单位是毫秒;这里的目标时间轴是秒。
+                        off_ms, _ratio_i = timings[i]
+                        off_s = float(off_ms) / 1000.0
+                    else:
+                        off_s = 0.0
+                    hold_s = holds_ms[i] / 1000.0
+                    # 目标起音 = 理想时刻 + 人性化偏移;链式保护:不早于上一音完全释放
+                    target_s = t0 + cursor_s + off_s
+                    if prev_release_s is not None and keys:
+                        target_s = max(target_s, prev_release_s + min_gap_s)
+                    interrupted = wait_until(
+                        self._stop_event,
+                        target_s - comp_s,
+                        precise=self._precise_wait,
+                    )
+                    if interrupted:
+                        break  # 停止信号在音符开始前到达:断点留在 i,续播重放
+                    start_t = time.perf_counter()
+                    actual_ms = (start_t - prev_start_t) * 1000.0 if prev_start_t is not None else None
+                    dev_ms = (actual_ms - prev_sched_ms) if actual_ms is not None and prev_sched_ms is not None else None
+                    error_msg = None
+                    try:
+                        if keys:
+                            self._require_dispatch_allowed()
+                            self._driver.press_chord(keys)
+                            hold_interrupted = wait_until(
+                                self._stop_event,
+                                time.perf_counter() + hold_s,
+                                precise=self._precise_wait,
+                            )
+                            self._driver.release_chord(keys)
+                            prev_release_s = target_s + hold_s
+                            if hold_interrupted:
+                                break  # 按住期被截断:断点留在 i,续播时重放该音符(不记日志)
+                        # 休止:时值由下一音符的绝对开始点体现,无需单独等待
+                    except Exception as e:
+                        error_msg = str(e)
+                        if self._logger:
+                            self._logger.log_note(i, note["notes"], keys, ok=False,
+                                                  sched_ms=prev_sched_ms, actual_ms=actual_ms,
+                                                  dev_ms=dev_ms, error=error_msg)
+                        if event_log_started:
+                            actual_s = max(0.0, start_t - t0)
+                            self._event_logger.log_note(
+                                NoteEvent(
+                                    index=i,
+                                    notes=list(note["notes"]),
+                                    keys=list(keys),
+                                    expected_time=max(0.0, cursor_s),
+                                    actual_time=actual_s,
+                                    deviation_ms=(actual_s - cursor_s) * 1000.0,
+                                    success=False,
+                                    error=error_msg,
+                                )
+                            )
+                        raise
+                    done = i + 1
                     if self._logger:
-                        self._logger.log_note(i, note["notes"], keys, ok=False,
-                                              sched_ms=prev_sched_ms, actual_ms=actual_ms,
-                                              dev_ms=dev_ms, error=error_msg)
+                        self._logger.log_note(i, note["notes"], keys, ok=True,
+                                              sched_ms=prev_sched_ms, actual_ms=actual_ms, dev_ms=dev_ms)
                     if event_log_started:
                         actual_s = max(0.0, start_t - t0)
                         self._event_logger.log_note(
@@ -266,38 +316,19 @@ class Player(QObject):
                                 expected_time=max(0.0, cursor_s),
                                 actual_time=actual_s,
                                 deviation_ms=(actual_s - cursor_s) * 1000.0,
-                                success=False,
-                                error=error_msg,
+                                success=True,
                             )
                         )
-                    raise
-                done = i + 1
-                if self._logger:
-                    self._logger.log_note(i, note["notes"], keys, ok=True,
-                                          sched_ms=prev_sched_ms, actual_ms=actual_ms, dev_ms=dev_ms)
-                if event_log_started:
-                    actual_s = max(0.0, start_t - t0)
-                    self._event_logger.log_note(
-                        NoteEvent(
-                            index=i,
-                            notes=list(note["notes"]),
-                            keys=list(keys),
-                            expected_time=max(0.0, cursor_s),
-                            actual_time=actual_s,
-                            deviation_ms=(actual_s - cursor_s) * 1000.0,
-                            success=True,
-                        )
-                    )
-                self.progress.emit(done, total)
-                prev_start_t = start_t
-                if keys:
-                    prev_sched_ms = dur_ms + (gap_ms if gap_ms > 0 else 0.0)
-                cursor_s += dur_ms / 1000.0 + gap_s
-            if self._stop_event.is_set():
-                # 停止 = 暂停:进度经 paused 信号带出,调用方可继续或重置
-                self.paused.emit(done, total)
-                return
-            normal = True
+                    self.progress.emit(done, total)
+                    prev_start_t = start_t
+                    if keys:
+                        prev_sched_ms = advances_ms[i]
+                    cursor_s += advances_ms[i] / 1000.0
+                if self._stop_event.is_set():
+                    # 停止 = 暂停:进度经 paused 信号带出,调用方可继续或重置
+                    self.paused.emit(done, total)
+                    return
+                normal = True
         except Exception as e:
             error = str(e)
         finally:

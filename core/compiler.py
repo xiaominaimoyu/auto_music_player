@@ -92,6 +92,12 @@ class CompileParams:
     pitch_direct_overrides: dict = field(default_factory=dict)
     modifier_policy: ModifierPolicy = ModifierPolicy.OCTAVE_FIRST
     chord_policy: ChordPolicy = ChordPolicy.CHORD_FIRST
+    # True: 修饰键提前到拍点之前按下，音键落在拍上。装不下时才推迟该音。
+    modifier_prepress: bool = True
+    # True: gap 加在时值后面（旧行为，节奏被拉长）。False: gap 从时值里扣出。
+    additive_gap: bool = False
+    # True: 整段使用修正前的调度循环（间隙外加 + 修饰键推迟并推后时间轴）。
+    legacy_timing: bool = False
 
     def __post_init__(self):
         if not 1 <= int(self.bpm) <= MAX_BPM:
@@ -236,18 +242,24 @@ def compile_score(elements, params: CompileParams, timings=None, *, source_index
     `core.humanize.plan_timings` 产出——每元素 (offset_ms, hold_ratio);
     休止元素与 None 时保持机械时序(hold 用 params.hold_ratio)。
 
-    修饰键采用「相邻同态保持按住」策略:只有当相邻音符的修饰键不同时才释放再按下。
-    否则同一修饰键会在 0ms 内 release→press,游戏极可能漏掉重新按下(与 settle 过短同类)。
+    默认调度把 gap 从音符时值里扣成松开间隙，并在拍点之前预按修饰键，
+    使音键落在拍上。``legacy_timing`` 回到修正前的循环。
     """
-    beat_ms = 60000.0 / max(1, int(params.bpm))
-    gap = float(params.gap_ms)
-    settle = float(params.settle_ms)
-    release_settle = float(params.release_settle_ms)
-
     if int(source_index_offset) < 0:
         raise ValueError("source_index_offset 不能为负数")
     source_index_offset = int(source_index_offset)
     plan, degradations, skipped = _flatten(elements, params, source_index_offset)
+    if params.legacy_timing:
+        return _schedule_legacy(plan, params, timings, degradations, skipped)
+    return _schedule_faithful(plan, params, timings, degradations, skipped)
+
+
+def _schedule_legacy(plan, params, timings, degradations, skipped) -> CompileResult:
+    """修正前的调度：gap 加在时值后，修饰键切换把 nominal 时间轴往后推。"""
+    beat_ms = 60000.0 / max(1, int(params.bpm))
+    gap = float(params.gap_ms)
+    settle = float(params.settle_ms)
+    release_settle = float(params.release_settle_ms)
     result = CompileResult(degradations=degradations, skipped=skipped)
     # cursor 是未加 jitter 的逻辑时间轴。真人化只改变当前音的实际起音，
     # 不能反向推移下一拍，否则随机偏移会在长曲中累计漂移。
@@ -332,3 +344,218 @@ def compile_score(elements, params: CompileParams, timings=None, *, source_index
     if result.events:
         result.duration_ms = result.events[-1].t_ms
     return result
+
+
+_MIN_HOLD_MS = 1.0
+
+
+class _Placed:
+    """一个已经落到时间轴上的发音音符，修饰键时刻在循环结束后再生成。"""
+
+    def __init__(self, item, musical, key_down, key_up, button, source_end):
+        self.item = item
+        self.musical = musical
+        self.key_down = key_down
+        self.key_up = key_up
+        self.button = button
+        self.source_end = source_end
+        self.mod_down = None
+        self.release_modifier = False
+
+    @property
+    def hold_ms(self):
+        return self.key_up - self.key_down
+
+
+def _offset_and_ratio(item, timings, params):
+    if timings is None:
+        return 0.0, float(params.hold_ratio)
+    off, ratio = timings[item["index"]]
+    if ratio is None:
+        ratio = params.hold_ratio
+    return float(off), float(ratio)
+
+
+def _transition_lead(held, button, settle, release_settle):
+    """上一音键松开到本音键按下之间，修饰态切换所需要的时间。
+
+    同态（含都是自然音）为 0。预按成功时这段时间从上一音的按住里扣出，
+    音键仍落在拍点上。
+    """
+    if held == button:
+        return 0.0
+    if button and not held:
+        return settle
+    if held and not button:
+        return release_settle
+    if held and button:
+        return release_settle + settle
+    return 0.0
+
+
+def _try_shorten(note: _Placed, needed_up: float) -> bool:
+    """把上一音的松开时刻提前到 ``needed_up``。提前不到最短按住就放弃。"""
+    if needed_up >= note.key_up - 1e-9:
+        return True
+    if note.hold_ms <= _MIN_HOLD_MS:
+        return False
+    min_up = note.key_down + _MIN_HOLD_MS
+    if needed_up < min_up - 1e-6:
+        return False
+    note.key_up = needed_up
+    return True
+
+
+def _schedule_faithful(plan, params, timings, degradations, skipped) -> CompileResult:
+    """节奏忠实调度。
+
+    音键默认落在谱面拍点上。gap 是拍点前的最小松开间隙，从上一音的按住里扣。
+    修饰键在拍点前 ``settle_ms`` 预按；只有上一音短到削不出这段时间时，
+    才推迟当前音并记一条 PREPRESS_DELAY。
+    """
+    beat_ms = 60000.0 / max(1, int(params.bpm))
+    gap = float(params.gap_ms)
+    settle = float(params.settle_ms)
+    release_settle = float(params.release_settle_ms)
+    prepress = bool(params.modifier_prepress)
+    additive = bool(params.additive_gap)
+    min_gap = float(params.min_gap_ms) if timings is not None else 0.0
+
+    musical = []
+    cursor = 0.0
+    for item in plan:
+        musical.append(cursor)
+        cursor += float(item["dur"]) * beat_ms
+        if additive:
+            cursor += gap
+
+    if prepress:
+        for index, item in enumerate(plan):
+            if item["kind"] != "note" or not item["button"]:
+                if item["kind"] == "note":
+                    break
+                continue
+            off, _ = _offset_and_ratio(item, timings, params)
+            earliest_key = musical[index] + off
+            if earliest_key < settle:
+                shift = settle - earliest_key
+                musical = [value + shift for value in musical]
+            break
+
+    result = CompileResult(degradations=degradations, skipped=skipped)
+    placed: list[_Placed] = []
+    prev: _Placed | None = None
+    held = None
+
+    for index, item in enumerate(plan):
+        if item["kind"] == "rest":
+            if held and prev is not None:
+                prev.release_modifier = True
+            held = None
+            continue
+
+        off, ratio = _offset_and_ratio(item, timings, params)
+        dur_ms = float(item["dur"]) * beat_ms
+        desired = dur_ms * ratio
+        if params.max_hold_ms is not None and desired > float(params.max_hold_ms):
+            desired = float(params.max_hold_ms)
+            result.degradations.append(Degradation(
+                item["index"], f"hold {dur_ms:.0f}ms", f"{desired:.0f}ms", "MAX_HOLD"))
+
+        onset = musical[index]
+        ideal = onset + off
+        if ideal < 0.0:
+            ideal = 0.0
+        target = ideal
+        button = item["button"]
+        lead = _transition_lead(held, button, settle, release_settle)
+        next_item = plan[index + 1] if index + 1 < len(plan) else None
+        next_is_attack = next_item is not None and next_item["kind"] == "note"
+        # 松开间隙只加在两个相邻发音之间；休止本身就是间隔，不再额外加一层。
+        prev_is_attack = index > 0 and plan[index - 1]["kind"] == "note"
+        floor_gap = gap if (not additive and prev_is_attack) else 0.0
+
+        if prev is not None and prepress:
+            shorten_need = max(floor_gap, lead)
+            if shorten_need > 0.0:
+                _try_shorten(prev, target - shorten_need)
+
+        if prev is not None:
+            floor = prev.key_up + max(floor_gap, min_gap, lead)
+            if target < floor:
+                if prepress and lead > 0.0 and ideal < floor - 0.5:
+                    result.degradations.append(Degradation(
+                        item["index"],
+                        "on-beat",
+                        f"+{floor - ideal:.0f}ms",
+                        "PREPRESS_DELAY",
+                    ))
+                target = floor
+
+        if not prepress and lead > 0.0 and prev is None:
+            # 曲首没有可以预按的空白，音键只能落在修饰键 settle 之后。
+            target = max(target, ideal + lead)
+
+        if not additive and gap > 0.0 and next_is_attack:
+            room = (onset + dur_ms - gap) - target
+            if room >= desired:
+                hold = desired
+            elif room >= _MIN_HOLD_MS:
+                hold = room
+            else:
+                hold = desired
+        else:
+            hold = desired
+        if hold < 0.0:
+            hold = 0.0
+
+        nxt = next_item
+        source_end = nxt is None or nxt["source_index"] != item["source_index"]
+        note = _Placed(item, onset, target, target + hold, button, source_end)
+        if button and button != held:
+            note.mod_down = target - settle
+        if held and held != button and prev is not None:
+            prev.release_modifier = True
+        held = button
+        placed.append(note)
+        prev = note
+        result.note_count += 1
+
+    if held and prev is not None:
+        prev.release_modifier = True
+
+    for note in placed:
+        if note.mod_down is not None:
+            result.events.append(InputEvent(
+                note.mod_down, "mouse", note.button, "down", note.item["source_index"]
+            ))
+        result.events.append(InputEvent(
+            note.key_down, "kb", note.item["key"], "down", note.item["source_index"]
+        ))
+        result.events.append(InputEvent(
+            note.key_up, "kb", note.item["key"], "up",
+            note.item["source_index"], source_end=note.source_end,
+        ))
+        if note.release_modifier and note.button:
+            result.events.append(InputEvent(
+                note.key_up + release_settle, "mouse", note.button, "up",
+                note.item["source_index"],
+            ))
+
+    _shift_nonnegative(result.events)
+    result.events.sort(key=lambda e: (e.t_ms, 0 if e.action == "up" else 1))
+    if result.events:
+        result.duration_ms = result.events[-1].t_ms
+    return result
+
+
+def _shift_nonnegative(events):
+    """预按若仍落到 0 之前，整段平移，起音间隔保持不变。"""
+    if not events:
+        return
+    for index, event in enumerate(events):
+        if -1e-4 < event.t_ms < 0.0:
+            events[index] = replace(event, t_ms=0.0)
+    earliest = min(event.t_ms for event in events)
+    if earliest < -1e-4:
+        events[:] = [replace(event, t_ms=event.t_ms - earliest) for event in events]

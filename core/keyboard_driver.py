@@ -113,7 +113,8 @@ class KeyboardDriver:
     DEFAULT_RELEASE_SETTLE_MS = 20.0
 
     def __init__(self, settle_ms: float = DEFAULT_SETTLE_MS,
-                 release_settle_ms: float = DEFAULT_RELEASE_SETTLE_MS):
+                 release_settle_ms: float = DEFAULT_RELEASE_SETTLE_MS,
+                 batch_chords: bool = True):
         size = ctypes.sizeof(INPUT)
         if size != _expected_input_size():
             raise RuntimeError(
@@ -121,6 +122,8 @@ class KeyboardDriver:
             )
         self.settle_ms = _check_settle("settle_ms", settle_ms)
         self.release_settle_ms = _check_settle("release_settle_ms", release_settle_ms)
+        # True: 和弦一次 SendInput 同时按下。False: 旧的逐键 5ms 间隔。
+        self.batch_chords = bool(batch_chords)
 
     def press_key(self, key: str):
         self._send(key, up=False)
@@ -129,16 +132,22 @@ class KeyboardDriver:
         self._send(key, up=True)
 
     def press_chord(self, keys: list[str]):
-        for i, k in enumerate(keys):
-            if i:
-                time.sleep(self.CHORD_INTERVAL_MS / 1000.0)
-            self._send(k, up=False)
+        self._send_chord(keys, up=False)
 
     def release_chord(self, keys: list[str]):
-        for i, k in enumerate(keys):
+        self._send_chord(keys, up=True)
+
+    def _send_chord(self, keys: list[str], up: bool):
+        keys = [key for key in keys if key]
+        if not keys:
+            return
+        if self.batch_chords:
+            self._send_many(keys, up=up)
+            return
+        for i, key in enumerate(keys):
             if i:
                 time.sleep(self.CHORD_INTERVAL_MS / 1000.0)
-            self._send(k, up=True)
+            self._send(key, up=up)
 
     # ---------- 鼠标修饰键 ----------
     def press_mouse(self, button: str):
@@ -216,6 +225,24 @@ class KeyboardDriver:
         sent = u32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
         if sent != 1:
             raise OSError(f"SendInput 发送失败(key={key}, winerror={ctypes.GetLastError()})")
+
+    @classmethod
+    def _send_many(cls, keys: list[str], up: bool):
+        """一次 SendInput 送出整组按键，和弦不再被 5ms 逐键拆开。"""
+        u32 = _load_user32()
+        flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
+        batch = (INPUT * len(keys))()
+        for index, key in enumerate(keys):
+            scan = cls._scan_code(key)
+            item = INPUT(type=INPUT_KEYBOARD)
+            item.ki = KEYBDINPUT(0, scan, flags, 0, 0)
+            batch[index] = item
+        sent = u32.SendInput(len(keys), batch, ctypes.sizeof(INPUT))
+        if sent != len(keys):
+            raise OSError(
+                f"SendInput 和弦发送失败(keys={keys}, sent={sent}, "
+                f"winerror={ctypes.GetLastError()})"
+            )
 
     @classmethod
     def _send_mouse(cls, button: str, up: bool):
