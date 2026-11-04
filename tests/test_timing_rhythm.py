@@ -8,7 +8,7 @@ from core.compiler import CompileParams, compile_score
 from core.ir import IRNote
 from core.keymap import KeyMap
 from core.player import Player
-from core.timing import slot_hold_and_advance, timing_config, wait_until
+from core.timing import _WIN_COARSE_MARGIN_S, slot_hold_and_advance, timing_config, wait_until
 
 _KEYMAP = KeyMap({
     "high": list("QWERTYU"),
@@ -192,13 +192,16 @@ class TestPlayerCarvesGap(unittest.TestCase):
 
 class TestPreciseWait(unittest.TestCase):
     def test_wait_hits_deadline_within_a_few_milliseconds(self):
-        stop = threading.Event()
-        start = time.perf_counter()
-        deadline = start + 0.04
-        stopped = wait_until(stop, deadline, precise=True)
-        elapsed = time.perf_counter() - start
-        self.assertFalse(stopped)
-        self.assertAlmostEqual(elapsed, 0.04, delta=0.008)
+        # 5ms 只留给线程被抢占一次。以前粗等待只提前 2ms，Windows 15.6ms
+        # 时间片会把 40ms 稳定睡成大约 48–50ms，这个容差仍然能抓住那种错误。
+        for _ in range(5):
+            stop = threading.Event()
+            start = time.perf_counter()
+            deadline = start + 0.04
+            stopped = wait_until(stop, deadline, precise=True)
+            elapsed = time.perf_counter() - start
+            self.assertFalse(stopped)
+            self.assertAlmostEqual(elapsed, 0.04, delta=0.005)
 
     def test_stop_interrupts_long_wait(self):
         stop = threading.Event()
@@ -210,6 +213,10 @@ class TestPreciseWait(unittest.TestCase):
         stopped = wait_until(stop, started + 2.0, precise=True)
         self.assertTrue(stopped)
         self.assertLess(time.perf_counter() - started, 0.2)
+
+    def test_windows_coarse_margin_covers_one_timer_tick(self):
+        """默认时间片约 15.625ms。余量必须大于它，粗等待才不会睡过截止点。"""
+        self.assertGreaterEqual(_WIN_COARSE_MARGIN_S, 0.016)
 
 
 if __name__ == "__main__":
