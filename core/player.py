@@ -16,10 +16,11 @@ import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from core.direct_timing import direct_slots, strum_order
 from core.event_logger import NoteEvent
-from core.humanize import make_seed, plan_timings, timing_parts
+from core.humanize import make_seed, plan_timings
 from core.keyboard_driver import KeyboardDriver
-from core.timing import high_resolution_period, slot_hold_and_advance, wait_until
+from core.timing import high_resolution_period, wait_until
 
 
 _USE_CONFIGURED_HUMANIZE = object()
@@ -133,10 +134,8 @@ class Player(QObject):
 
     def _strum_chord(self, keys, strum_ms, index):
         """和弦在 8–25ms 内扫过，方向逐个和弦交替，避免永远从低到高。"""
-        order = list(keys)
-        if index % 2:
-            order.reverse()
-        step_s = (min(25.0, max(8.0, float(strum_ms))) / max(1, len(order) - 1)) / 1000.0
+        order, step_ms = strum_order(keys, strum_ms, index)
+        step_s = step_ms / 1000.0
         pressed = []
         try:
             for nth, key in enumerate(order):
@@ -176,7 +175,6 @@ class Player(QObject):
         humanize_seed=None,
         trace_context=None,
     ):
-        beat_ms = 60000.0 / max(1, bpm)
         total = len(notes)
         done = min(start_index, total)
         normal = False
@@ -194,10 +192,10 @@ class Player(QObject):
                 humanize_seed if humanize_seed is not None else make_seed()
             )
             timings = plan_timings(notes, humanize, seed=self.last_humanize_seed)
-            min_gap_s = humanize.min_gap_ms / 1000.0
+            min_gap_ms = humanize.min_gap_ms
         else:
             timings = None
-            min_gap_s = 0.0
+            min_gap_ms = 0.0
             self.last_humanize_seed = None
         if self._logger:
             self._logger.start(score_name, bpm, total)
@@ -227,36 +225,11 @@ class Player(QObject):
         # 绝对时钟调度:每个音符的目标开始时刻 = t0 + 前置音符时值槽之和 - 补偿量。
         # 到点即发,节奏不随音符数累积漂移;start_index 之前的音符同样计入时间轴。
         # gap 默认从时值里扣成松开间隙,起音间隔仍等于谱面时值。
-        gap_value = gap_ms if gap_ms > 0 else 0.0
-        advances_ms = []
-        holds_ms = []
-        for index, note in enumerate(notes):
-            dur_ms = float(note["dur"]) * beat_ms
-            followed = index + 1 < total and bool(notes[index + 1].get("notes"))
-            if timings is not None:
-                _off, ratio_i, pull_ms = timing_parts(timings[index])
-                ratio = hold_ratio if ratio_i is None else float(ratio_i)
-            else:
-                ratio = hold_ratio
-                pull_ms = 0.0
-            if not note.get("notes"):
-                advance_i = dur_ms + gap_value if self._additive_gap else dur_ms
-                holds_ms.append(0.0)
-                advances_ms.append(advance_i)
-            else:
-                hold_i, advance_i = slot_hold_and_advance(
-                    dur_ms,
-                    ratio,
-                    gap_value,
-                    additive=self._additive_gap,
-                    followed_by_attack=followed,
-                )
-                holds_ms.append(max(0.0, hold_i - pull_ms))
-                advances_ms.append(advance_i)
-        pre_s = sum(advances_ms[:start_index]) / 1000.0
-        t0 = time.perf_counter() - pre_s
-        cursor_s = pre_s
-        prev_release_s = None    # 上一发音音符的计划释放时刻(链式防叠键下限)
+        slots = direct_slots(notes, bpm, hold_ratio, gap_ms, timings,
+                             additive=self._additive_gap, min_gap_ms=min_gap_ms,
+                             keymap=self._keymap, start_index=start_index)
+        pre_ms = slots[start_index].cursor_ms if start_index < total else 0.0
+        t0 = time.perf_counter() - pre_ms / 1000.0
         prev_start_t = None    # 上一音符实际开始时刻(测量实际间隔)
         prev_sched_ms = None   # 上一音符到本音符的理论间隔
         try:
@@ -265,20 +238,12 @@ class Player(QObject):
                     if self._stop_event.is_set():
                         break
                     note = notes[i]
-                    dur_ms = note["dur"] * beat_ms
+                    slot = slots[i]
                     keys = [self._keymap.key_for(nid) for nid in note["notes"]]
                     keys = [k for k in keys if k]
-                    if timings is not None:
-                        # plan_timings 的偏移单位是毫秒;这里的目标时间轴是秒。
-                        off_ms, _ratio_i, _pull_ms = timing_parts(timings[i])
-                        off_s = float(off_ms) / 1000.0
-                    else:
-                        off_s = 0.0
-                    hold_s = holds_ms[i] / 1000.0
-                    # 目标起音 = 理想时刻 + 人性化偏移;链式保护:不早于上一音完全释放
-                    target_s = t0 + cursor_s + off_s
-                    if prev_release_s is not None and keys:
-                        target_s = max(target_s, prev_release_s + min_gap_s)
+                    cursor_s = slot.cursor_ms / 1000.0
+                    hold_s = slot.hold_ms / 1000.0
+                    target_s = t0 + slot.onset_ms / 1000.0
                     interrupted = wait_until(
                         self._stop_event,
                         target_s - comp_s,
@@ -306,7 +271,6 @@ class Player(QObject):
                                 precise=self._precise_wait,
                             )
                             self._driver.release_chord(keys)
-                            prev_release_s = target_s + hold_s
                             if hold_interrupted:
                                 break  # 按住期被截断:断点留在 i,续播时重放该音符(不记日志)
                         # 休止:时值由下一音符的绝对开始点体现,无需单独等待
@@ -351,8 +315,7 @@ class Player(QObject):
                     self.progress.emit(done, total)
                     prev_start_t = start_t
                     if keys:
-                        prev_sched_ms = advances_ms[i]
-                    cursor_s += advances_ms[i] / 1000.0
+                        prev_sched_ms = slot.advance_ms
                 if self._stop_event.is_set():
                     # 停止 = 暂停:进度经 paused 信号带出,调用方可继续或重置
                     self.paused.emit(done, total)
