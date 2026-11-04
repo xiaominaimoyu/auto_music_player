@@ -38,9 +38,11 @@ class TestMidiImportDialog(unittest.TestCase):
     def test_defaults_are_safe_and_recommended(self):
         options = self.dialog.options()
         self.assertEqual(options.track, "auto")
-        self.assertEqual(options.style, "piano")
+        self.assertEqual(options.style, "melody")
         self.assertTrue(options.fold_octaves)
         self.assertEqual(options.bpm, 120)
+        self.assertEqual(options.transpose, self.dialog._advice.semitones)
+        self.assertEqual(self.dialog._advice.semitones, 0)
 
     def test_user_choices_are_returned_without_side_effects(self):
         track_index = self.dialog.track_combo.findData(1)
