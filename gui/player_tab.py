@@ -25,8 +25,13 @@ from core import ir as ir_mod
 from core.compiler import compile_score
 from core.event_logger import get_event_logger
 from core.humanize import HumanizeParams, make_seed, plan_timings
+from core.game_preview import (
+    compiled_preview_duration,
+    compiled_preview_events,
+    direct_preview_events,
+)
 from core.practice import PracticeSession, build_dual_rail_hint, build_practice_cues
-from core.preview_player import PreviewPlayer
+from core.preview_player import PREVIEW_INSTRUMENTS, PreviewPlayer
 from core.profile import resolve_profile
 from core.scenario import SCENARIOS, get_scenario
 from core.timing import TimingConfig, timing_config
@@ -240,6 +245,7 @@ class PlayerTab(QWidget):
         self._mini_mode = False
         self._focus_lost = False
         self._build_ui()
+        self._apply_preview_defaults()
         self._focus_timer = QTimer(self)
         self._focus_timer.setInterval(self._poll_interval_ms)
         self._focus_timer.timeout.connect(self._check_focus)
@@ -435,6 +441,28 @@ class PlayerTab(QWidget):
 
         # 控制
         card, lay = self._card("演奏控制")
+        preview_row = QHBoxLayout()
+        preview_row.setSpacing(10)
+        instrument_label = QLabel("试听音色")
+        instrument_label.setObjectName("FieldLabel")
+        self.preview_instrument_combo = QComboBox()
+        self.preview_instrument_combo.setAccessibleName("试听音色")
+        for label, program in PREVIEW_INSTRUMENTS.items():
+            self.preview_instrument_combo.addItem(label, program)
+        self.preview_mode_combo = QComboBox()
+        self.preview_mode_combo.setAccessibleName("试听方式")
+        self.preview_mode_combo.addItem("校对原谱（严格拍点）", "score")
+        self.preview_mode_combo.addItem("模拟游戏演奏（按档位规则）", "game")
+        self.preview_mode_combo.setToolTip(
+            "校对原谱只按谱面拍点发声；模拟游戏演奏使用当前档位的八度/半音、"
+            "和弦降级、修饰键预按与真人化扫弦，听到的就是游戏里实际会弹的样子"
+        )
+        preview_row.addWidget(instrument_label)
+        preview_row.addWidget(self.preview_instrument_combo)
+        preview_row.addWidget(self.preview_mode_combo)
+        preview_row.addStretch(1)
+        lay.addLayout(preview_row)
+
         ctrl_row = QHBoxLayout()
         self.play_btn = QPushButton("开始演奏")
         self.play_btn.setObjectName("BtnPrimary")
@@ -446,7 +474,7 @@ class PlayerTab(QWidget):
         self.preview_btn.setMinimumWidth(120)
         self.preview_btn.setEnabled(False)
         self.preview_btn.setToolTip(
-            "使用系统大钢琴音色试听当前乐谱,不会向游戏发送键盘或鼠标按键"
+            "用所选音色试听当前乐谱,不会向游戏发送键盘或鼠标按键"
         )
         self.preview_btn.clicked.connect(self._toggle_preview)
         self.stop_btn = QPushButton("停止")
@@ -505,7 +533,8 @@ class PlayerTab(QWidget):
         )
         lay.addWidget(hint)
         self.preview_status = QLabel(
-            "试听使用系统大钢琴音色，不会操作游戏；建议确认旋律后再开始演奏。"
+            "试听只走扬声器，不会操作游戏；筝类使用系统 Koto 近似音色。"
+            "建议先用“模拟游戏演奏”确认档位降级后再开始演奏。"
         )
         self.preview_status.setObjectName("HintText")
         self.preview_status.setWordWrap(True)
@@ -1069,6 +1098,66 @@ class PlayerTab(QWidget):
         self.preview_btn.setEnabled(
             (self._preview_active or has_notes) and not self._real_playback_active()
         )
+        # 播放中不能换音色/换方式:换一个却听到另一个才是真 bug
+        for combo in (self.preview_instrument_combo, self.preview_mode_combo):
+            combo.setEnabled(not self._preview_active)
+
+    def _apply_preview_defaults(self):
+        """按当前档位选取默认音色;档位没写或名字对不上就保留首选。"""
+        if not hasattr(self, "preview_instrument_combo"):
+            return
+        name = str(getattr(self._profile, "preview_instrument", "") or "")
+        index = self.preview_instrument_combo.findText(name) if name else -1
+        if index >= 0:
+            self.preview_instrument_combo.setCurrentIndex(index)
+
+    def _preview_timing(self, score):
+        """与 _play 相同的节奏参数:MIDI 导入不加 gap,改用克制的真人化幅度。"""
+        imported = _is_midi_score(score)
+        return (
+            0.0 if imported else self._gap_ms,
+            self._midi_humanize if imported else self._humanize_params,
+        )
+
+    def _game_preview_timeline(self, notes, score):
+        """把"游戏里会怎么弹"还原成 (起音/松开时间轴, 总时长)。"""
+        gap_ms, humanize = self._preview_timing(score)
+        if self._use_event_path():
+            # 没有注入档位列表时不会创建场景下拉,按自由演奏处理
+            combo = getattr(self, "scenario_combo", None)
+            scenario_id = (combo.currentData() if combo is not None else None) or "free_play"
+            plan, degradations = build_event_plan(
+                notes,
+                self._profile,
+                scenario_id,
+                bpm=self.bpm_spin.value(),
+                settle_ms=self._settle_ms,
+                release_settle_ms=self._release_settle_ms,
+                hold_ratio=self._hold_ratio,
+                gap_ms=gap_ms,
+                humanize=humanize,
+                humanize_seed=make_seed() if humanize is not None else None,
+                timing=self._timing,
+            )
+            events = compiled_preview_events(plan.events, self._profile)
+            duration = compiled_preview_duration(plan.events)
+            if not events:
+                raise ValueError("当前档位下这段乐谱没有可发声的音符")
+            note = f" · 已降级 {len(degradations)} 处" if degradations else ""
+            return events, duration, note
+        events, duration = direct_preview_events(
+            notes,
+            self.bpm_spin.value(),
+            self._player.keymap,
+            hold_ratio=self._hold_ratio,
+            gap_ms=gap_ms,
+            timing=self._timing,
+            humanize=humanize,
+            seed=make_seed() if humanize is not None else None,
+        )
+        if not events:
+            raise ValueError("当前键位映射下这段乐谱没有可发声的音符")
+        return events, duration, ""
 
     def _toggle_preview(self):
         if self._preview_active:
@@ -1090,17 +1179,44 @@ class PlayerTab(QWidget):
         if prepared is None or not prepared.notes:
             AppDialog.show_warning(self, "提示", "当前播放片段为空")
             return
+        program = self.preview_instrument_combo.currentData()
+        instrument = self.preview_instrument_combo.currentText()
+        simulated = self.preview_mode_combo.currentData() == "game"
+        if simulated:
+            try:
+                events, duration_ms, note = self._game_preview_timeline(
+                    list(prepared.notes), score
+                )
+            except (TypeError, ValueError, RuntimeError) as e:
+                AppDialog.show_error(self, "试听失败", str(e))
+                self.preview_status.setText(f"试听失败: {e}")
+                return
         self._preview_error = False
         self._preview_active = True
         self.preview_btn.setText("停止试听")
         self.play_btn.setEnabled(False)
-        self.preview_status.setText("大钢琴音色试听中…不会向游戏发送按键")
-        try:
-            started = self._preview_player.play(
-                prepared.notes,
-                bpm=self.bpm_spin.value(),
-                score_name=score["name"],
+        if simulated:
+            self.preview_status.setText(
+                f"{instrument} · 模拟游戏演奏中{note}；只发声，不会向游戏发送按键"
             )
+        else:
+            self.preview_status.setText(
+                f"{instrument} · 校对原谱试听中…不会向游戏发送按键"
+            )
+        try:
+            if simulated:
+                started = self._preview_player.play_events(
+                    events,
+                    program=program,
+                    duration_ms=duration_ms,
+                )
+            else:
+                started = self._preview_player.play(
+                    prepared.notes,
+                    bpm=self.bpm_spin.value(),
+                    score_name=score["name"],
+                    program=program,
+                )
         except (TypeError, ValueError, RuntimeError) as e:
             self._preview_active = False
             self.preview_btn.setText("试听当前乐谱")
@@ -1259,6 +1375,8 @@ class PlayerTab(QWidget):
         if pid is None:
             return
         self._profile = resolve_profile(self._profiles, pid)
+        # 每个档位有自己的默认试听音色(三角洲=口琴,默认=竖琴)
+        self._apply_preview_defaults()
 
         # 记录控制事件
         try:

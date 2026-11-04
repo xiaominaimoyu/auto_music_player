@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 from core.parser import AI_MISSING_SEPARATOR_REASON, parse_jianpu
 from core.practice import StepRecorder
 from core.prompt import JIANPU_PROMPT
-from core.preview_player import PreviewPlayer
+from core.preview_player import PREVIEW_INSTRUMENTS, PreviewPlayer
 from core.recording import PerformanceRecorder, PhysicalNoteResolver
 from core.score_model import validate_notes
 from core.jianpu_editor import insert_rest, delete_event
@@ -211,7 +211,7 @@ class UploadTab(QWidget):
         # 300px 会强行压缩布局,导致这些控件在高 DPI 下互相覆盖。
         card3.setup(height=620, min_height=588)
         lay3.addLayout(
-            _step_row("3", "校对表格", "音符列可写和弦,如 high_1,mid_3;时值单位:拍")
+            _step_row("3", "校对表格", "和弦音符用逗号分隔。半音列可填 #，也可逐音填写，如 0,1,0。时值单位为拍。")
         )
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["音符", "时值(拍)", "半音"])
@@ -272,10 +272,15 @@ class UploadTab(QWidget):
         table_row.addWidget(add_btn)
         table_row.addWidget(del_btn)
         table_row.addWidget(clear_btn)
+        self.preview_instrument_combo = QComboBox()
+        self.preview_instrument_combo.setAccessibleName("原谱试听音色")
+        for label, program in PREVIEW_INSTRUMENTS.items():
+            self.preview_instrument_combo.addItem(label, program)
+        table_row.addWidget(self.preview_instrument_combo)
         self.preview_btn = QPushButton("试听当前乐谱")
         self.preview_btn.setObjectName("BtnPrimary")
         self.preview_btn.setToolTip(
-            "使用系统大钢琴音色试听当前校对结果,不会向游戏发送按键"
+            "用所选乐器试听校对表中的原谱，只通过扬声器播放"
         )
         self.preview_btn.setEnabled(False)
         self.preview_btn.clicked.connect(self._toggle_preview)
@@ -381,7 +386,7 @@ class UploadTab(QWidget):
         lay3.addWidget(self.live_record_status)
 
         self.preview_status = QLabel(
-            "试听使用系统大钢琴音色，不会操作游戏；建议校对完成后先试听，再保存或开始演奏。"
+            "选择乐器可试听校对表中的原谱。筝类使用系统 Koto 近似音色。"
         )
         self.preview_status.setObjectName("SectionSubtitle")
         self.preview_status.setWordWrap(True)
@@ -469,9 +474,7 @@ class UploadTab(QWidget):
             notes_str = ",".join(n["notes"]) if n["notes"] else "(休止)"
             self.table.setItem(row, 0, QTableWidgetItem(notes_str))
             self.table.setItem(row, 1, QTableWidgetItem(str(n["dur"])))
-            self.table.setItem(
-                row, 2, QTableWidgetItem("#" if n.get("semitone") else "")
-            )
+            self.table.setItem(row, 2, QTableWidgetItem(self._semitone_text(n)))
         self._update_preview_button()
 
     def _clear_table(self):
@@ -487,6 +490,7 @@ class UploadTab(QWidget):
         if not hasattr(self, "preview_btn"):
             return
         self.preview_btn.setEnabled(self._preview_active or self.table.rowCount() > 0)
+        self.preview_instrument_combo.setEnabled(not self._preview_active)
 
     def _toggle_preview(self):
         if self._preview_active:
@@ -503,12 +507,14 @@ class UploadTab(QWidget):
         self._preview_error = False
         self._preview_active = True
         self.preview_btn.setText("停止试听")
-        self.preview_status.setText("大钢琴音色试听中…不会向游戏发送按键")
+        self.preview_instrument_combo.setEnabled(False)
+        self.preview_status.setText(f"正在用{self.preview_instrument_combo.currentText()}试听原谱")
         try:
             started = self._preview_player.play(
                 notes,
                 bpm=self.bpm_spin.value(),
                 score_name=self.name_edit.text().strip() or "当前校对乐谱",
+                program=self.preview_instrument_combo.currentData(),
             )
         except (TypeError, ValueError, RuntimeError) as e:
             self._preview_active = False
@@ -559,13 +565,19 @@ class UploadTab(QWidget):
     def _current_record_duration(self):
         return float(self.record_dur_combo.currentData() or 1.0)
 
+    @staticmethod
+    def _semitone_text(item):
+        if "semitones" in item:
+            return ",".join(str(value) for value in item["semitones"])
+        return "#" if item.get("semitone") else ""
+
     def _append_table_item(self, item: dict):
         row = self.table.rowCount()
         self.table.insertRow(row)
         notes_str = ",".join(item["notes"]) if item["notes"] else "(休止)"
         self.table.setItem(row, 0, QTableWidgetItem(notes_str))
         self.table.setItem(row, 1, QTableWidgetItem(str(item["dur"])))
-        self.table.setItem(row, 2, QTableWidgetItem("#" if item.get("semitone") else ""))
+        self.table.setItem(row, 2, QTableWidgetItem(self._semitone_text(item)))
         self.table.selectRow(row)
         self._update_preview_button()
 
@@ -831,10 +843,15 @@ class UploadTab(QWidget):
             )
             item = {"notes": note_ids, "dur": dur}
             semi_text = item_semi.text().strip() if item_semi is not None else ""
-            if semi_text not in ("", "0", "#", "1"):
-                raise ValueError(f"第 {row + 1} 行半音只能填写 #、1、0 或留空")
-            if semi_text in ("#", "1"):
+            if "," in semi_text:
+                values = [part.strip() for part in semi_text.split(",")]
+                if any(value not in ("0", "1", "#") for value in values):
+                    raise ValueError(f"第 {row + 1} 行逐音半音只能填写 0、1 或 #")
+                item["semitones"] = [int(value != "0") for value in values]
+            elif semi_text in ("#", "1"):
                 item["semitone"] = 1
+            elif semi_text not in ("", "0"):
+                raise ValueError(f"第 {row + 1} 行半音只能填写 #、1、0 或留空")
             notes.append(item)
         # 格式/取值校验统一交给 Schema 校验器(与入库校验同一套规则)
         errors = validate_notes(notes)

@@ -10,11 +10,12 @@ import sys
 import time
 
 from pynput import keyboard as pk
-from PyQt6.QtCore import QEvent, QSettings, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSettings, QStandardPaths, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,6 +23,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QProgressDialog,
     QSizeGrip,
     QStackedWidget,
     QVBoxLayout,
@@ -30,7 +32,7 @@ from PyQt6.QtWidgets import (
 
 from core.app_identity import is_store_package
 from core.preview_player import PreviewPlayer
-from core.update_checker import check_for_update
+from core.update_checker import RELEASE_PUBLIC_KEY, UpdateCancelled, check_for_update, download_update
 from core.version import APP_VERSION, UPDATE_SEQUENCE
 from gui.library_tab import LibraryTab
 from gui.log_tab import PlayLogTab
@@ -181,6 +183,22 @@ class TitleBar(QWidget):
         layout.addWidget(self.btn_close)
 
 
+class _UpdateWorker(QThread):
+    progress = pyqtSignal(int)
+
+    def __init__(self, operation, parent):
+        super().__init__(parent)
+        self.operation = operation
+        self.result = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.result = self.operation(self)
+        except Exception as exc:
+            self.error = exc
+
+
 class MainWindow(QMainWindow):
     hotkey_play_requested = pyqtSignal()
     hotkey_stop_requested = pyqtSignal()
@@ -212,6 +230,8 @@ class MainWindow(QMainWindow):
         self._event_log_dir = event_log_dir
         self._export_dir = export_dir
         self._store_package = is_store_package()
+        self._update_worker = None
+        self._update_progress = None
         self._preview_player = (
             preview_player if preview_player is not None else PreviewPlayer(self)
         )
@@ -282,7 +302,7 @@ class MainWindow(QMainWindow):
 
         self.player_tab.refresh()
 
-        # 第一阶段只在正式打包应用中按间隔检查并提示；开发/测试运行不访问
+        # 只在正式打包应用中按间隔检查并提示；开发/测试运行不访问
         # 发布镜像，手动按钮仍可用于验证配置。
         update_cfg = cfg.get("update") or {}
         if (
@@ -334,6 +354,10 @@ class MainWindow(QMainWindow):
         if self._event_player is not None:
             self._event_player.shutdown()
         self._preview_player.shutdown()
+        if self._update_worker is not None:
+            self._update_worker.requestInterruption()
+            self._update_worker.wait()
+            self._update_worker = None
         try:
             self._db.close()
         except Exception:
@@ -380,12 +404,12 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        update_btn = QPushButton("Store 更新" if self._store_package else "检查更新")
-        update_btn.setObjectName("BtnSecondary")
+        self.update_btn = QPushButton("Store 更新" if self._store_package else "检查更新")
+        self.update_btn.setObjectName("BtnSecondary")
         if self._store_package:
-            update_btn.setToolTip("Store 版由 Microsoft Store 管理主程序更新")
-        update_btn.clicked.connect(self._check_updates)
-        sidebar_layout.addWidget(update_btn)
+            self.update_btn.setToolTip("Store 版由 Microsoft Store 管理主程序更新")
+        self.update_btn.clicked.connect(self._check_updates)
+        sidebar_layout.addWidget(self.update_btn)
 
         footer = QLabel(f"v{APP_VERSION}")
         footer.setObjectName("SidebarFooter")
@@ -478,8 +502,8 @@ class MainWindow(QMainWindow):
         self.player_tab.rearm_focus_watch()
 
     def _check_updates(self, silent=False):
-        """第一阶段只检查并提示；不下载、不替换当前 EXE。"""
-
+        if self._update_worker is not None:
+            return
         if self._store_package:
             if not silent:
                 AppDialog.show_info(
@@ -502,33 +526,83 @@ class MainWindow(QMainWindow):
                     "当前未配置签名更新 manifest。请先完成发布端公钥和双镜像配置。",
                 )
             return
-        try:
-            result = check_for_update(
-                APP_VERSION,
-                urls,
-                str(update_cfg.get("public_key") or ""),
-                current_sequence=UPDATE_SEQUENCE,
-            )
-        except Exception as exc:
-            if not silent:
-                AppDialog.show_warning(self, "检查更新失败", str(exc))
-            return
-        if result.update_available and result.manifest is not None:
-            notes = result.manifest.release_notes.strip()
-            message = f"发现新版本 v{result.manifest.version}。\n\n{notes}".strip()
-            AppDialog.show_info(
-                self,
-                "发现更新",
-                message + "\n\n当前阶段仅提示，不会自动下载或替换文件。",
-            )
-            self.set_status(f"发现更新 v{result.manifest.version}")
-            return
+        self._start_update_job(
+            lambda worker: check_for_update(
+                APP_VERSION, urls, RELEASE_PUBLIC_KEY, current_sequence=UPDATE_SEQUENCE,
+                cancelled=worker.isInterruptionRequested,
+            ),
+            self._offer_download, silent=silent, label="正在检查更新…",
+        )
+
+    def _start_update_job(self, operation, on_success, *, silent=False, label, downloading=False):
+        worker = _UpdateWorker(operation, self)
+        self._update_worker = worker
+        self.update_btn.setEnabled(False)
+        if not silent:
+            dialog = QProgressDialog(label, "取消", 0, 100 if downloading else 0, self)
+            dialog.setWindowTitle("程序更新")
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.canceled.connect(worker.requestInterruption)
+            worker.progress.connect(dialog.setValue)
+            self._update_progress = dialog
+            dialog.show()
+
+        def finished():
+            if self._update_worker is not worker:
+                return
+            self._update_worker = None
+            self.update_btn.setEnabled(True)
+            if self._update_progress is not None:
+                self._update_progress.hide()
+                self._update_progress.deleteLater()
+                self._update_progress = None
+            worker.deleteLater()
+            if isinstance(worker.error, UpdateCancelled):
+                self.set_status("已取消更新任务")
+            elif worker.error is not None:
+                if not silent:
+                    AppDialog.show_warning(self, "更新任务失败", str(worker.error))
+            else:
+                on_success(worker.result, silent)
+
+        worker.finished.connect(finished)
+        worker.start()
+
+    def _offer_download(self, result, silent):
         if result.error:
             if not silent:
                 AppDialog.show_warning(self, "检查更新失败", result.error)
-        else:
+            return
+        if not result.update_available:
             if not silent:
                 AppDialog.show_info(self, "检查更新", "当前已是最新版本")
+            return
+        manifest = result.manifest
+        self.set_status(f"发现更新 v{manifest.version}")
+        if not AppDialog.confirm(
+            self, "下载更新",
+            f"发现 v{manifest.version}（{manifest.size / 1048576:.1f} MB）。\n\n"
+            f"{manifest.release_notes}\n\n选择保存目录并下载新版 EXE？完成后可手动替换旧程序。",
+        ):
+            return
+        downloads = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+        directory = QFileDialog.getExistingDirectory(self, "选择新版程序的保存目录", downloads)
+        if directory:
+            self._start_update_job(
+                lambda worker: download_update(
+                    manifest, directory, current_version=APP_VERSION, current_sequence=UPDATE_SEQUENCE,
+                    cancelled=worker.isInterruptionRequested, progress=worker.progress.emit,
+                ),
+                self._download_finished, label=f"正在下载 v{manifest.version} 并校验…", downloading=True,
+            )
+
+    def _download_finished(self, path, silent):
+        self.set_status("新版程序下载完成")
+        AppDialog.show_info(
+            self, "更新已下载", f"已校验文件大小和 SHA-256。\n{path}\n\n"
+            "请先退出程序并备份曲库，再用下载的 EXE 替换原目录中的程序文件，保留原来的配置和数据目录。",
+        )
 
     def set_status(self, text: str):
         self.status_label.setText(text)

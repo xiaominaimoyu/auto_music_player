@@ -32,9 +32,10 @@ class FakePreviewPlayer(QObject):
         self.calls = []
         self.is_playing = False
 
-    def play(self, notes, bpm=100, gap_ms=20, score_name=""):
+    def play(self, notes, bpm=100, gap_ms=0, score_name="", *, program=0):
         self.calls.append(
-            {"notes": notes, "bpm": bpm, "gap_ms": gap_ms, "score_name": score_name}
+            {"notes": notes, "bpm": bpm, "gap_ms": gap_ms, "score_name": score_name,
+             "program": program}
         )
         self.is_playing = True
         return True
@@ -67,12 +68,18 @@ def test_upload_review_table_can_preview_current_unsaved_notes():
             tab.raw_text.setPlainText("1 2 0 3#")
             tab._parse()
             assert tab.preview_btn.isEnabled()
+            tab.preview_instrument_combo.setCurrentText("竖琴")
+            mixed = {"notes": ["mid_1", "mid_3"], "semitones": [1, 0], "dur": 1.0}
+            tab._append_table_item(mixed)
 
             tab._toggle_preview()
 
             assert len(preview.calls) == 1
-            assert preview.calls[0]["notes"][-1]["semitone"] == 1
+            assert preview.calls[0]["notes"][3]["semitone"] == 1
+            assert preview.calls[0]["notes"][-1] == mixed
             assert preview.calls[0]["notes"][2]["notes"] == []
+            assert preview.calls[0]["program"] == 46
+            assert not tab.preview_instrument_combo.isEnabled()
             assert tab.preview_btn.text() == "停止试听"
         finally:
             tab._stop_preview()

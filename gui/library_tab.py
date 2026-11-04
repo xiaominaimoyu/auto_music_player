@@ -27,6 +27,7 @@ from core.score_io import (
     inspect_midi,
 )
 from core.document_import import DocumentImportError
+from core.library_recovery import recover_library
 from core.omr_component import IMAGE_EXTENSIONS, OMRComponentError, OMRComponentUnavailable
 from core.score_model import ScoreValidationError
 from gui.import_dialog import MidiImportDialog
@@ -59,9 +60,19 @@ class LibraryTab(QWidget):
         header.addStretch(1)
         root.addLayout(header)
 
-        desc = QLabel("保存过的乐谱无需再次上传,可直接演奏")
-        desc.setObjectName("SectionSubtitle")
-        root.addWidget(desc)
+        location_row = QHBoxLayout()
+        self.location_label = QLabel(f"当前曲库目录　{self._db.data_dir}")
+        self.location_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.location_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.location_label.setWordWrap(True)
+        self.location_label.setObjectName("SectionSubtitle")
+        location_row.addWidget(self.location_label, 1)
+        recover_btn = QPushButton("找回旧曲库")
+        recover_btn.setObjectName("BtnSecondary")
+        recover_btn.setToolTip("从旧版本 data 目录的 scores.db 找回乐谱、来源附件与曲目偏好")
+        recover_btn.clicked.connect(self._recover_library)
+        location_row.addWidget(recover_btn)
+        root.addLayout(location_row)
 
         btn_row = QHBoxLayout()
         refresh_btn = QPushButton("刷新")
@@ -203,6 +214,30 @@ class LibraryTab(QWidget):
         AppDialog.show_success(self, "保存成功", f"《{values['name']}》已更新")
 
     # ---------- 导入 / 导出 ----------
+
+    def _recover_library(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择旧版本 data 目录中的 scores.db", "",
+            "SQLite 曲库或备份 (*.db *.bak *.sqlite *.db.legacy-*);;所有文件 (*.*)",
+        )
+        if not path or not AppDialog.confirm(
+            self, "找回旧曲库",
+            f"从 {path} 导入乐谱及其来源附件、演奏偏好？\n\n"
+            "请先退出使用旧曲库的程序，并将旧 sources 目录与数据库放在一起。"
+            "开始前会备份当前数据库，完成后可在这里查看导入的乐谱。",
+        ):
+            return
+        try:
+            result = recover_library(self._db, path)
+        except (sqlite3.Error, OSError, TypeError, ValueError) as exc:
+            AppDialog.show_error(self, "找回失败", str(exc))
+            return
+        self.refresh()
+        self.changed.emit()
+        detail = f"新增 {result.added} 首，已有 {result.skipped} 首。"
+        if result.backup:
+            detail += f"\n操作前的曲库备份：{result.backup}"
+        AppDialog.show_info(self, "找回完成", detail)
 
     def _import_score(self):
         path, _ = QFileDialog.getOpenFileName(

@@ -21,11 +21,12 @@ keymap:
   low: [Z, X, C, V, B, N, M]
 
 update:
-  # 第一阶段只检查并提示，不自动下载或替换 EXE。
+  # 定期检查新版，确认后将通过校验的 EXE 保存到所选目录，供手动替换。
   enabled: true
   manifest_urls:
     - https://gitee.com/muming04yue/auto_music_player/raw/main/updates/stable.json
     - https://raw.githubusercontent.com/xiaominaimoyu/auto_music_player/main/updates/stable.json
+  # 发布验签公钥内置于程序，旧版配置中的 public_key 不参与验签。
   public_key: "6QF3M1S8xGQslxyJc2RLlCm8xy0HTRYXZvXk6RgMInY="
   check_interval_hours: 24
 
