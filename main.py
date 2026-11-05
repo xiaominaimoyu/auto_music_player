@@ -346,6 +346,7 @@ def main():
         event_log_dir=event_log_dir,
         export_dir=os.path.join(data_dir, "exports"),
         legacy_libraries=legacy_libraries,
+        data_dir=data_dir,
     )
     win.show()
     sys.exit(app.exec())

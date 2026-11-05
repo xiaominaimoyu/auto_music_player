@@ -11,7 +11,7 @@ import time
 
 from pynput import keyboard as pk
 from PyQt6.QtCore import QEvent, QSettings, QStandardPaths, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
+from PyQt6.QtGui import QBrush, QColor, QCursor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QProgressDialog,
+    QScrollArea,
     QSizeGrip,
     QStackedWidget,
     QVBoxLayout,
@@ -31,12 +32,15 @@ from PyQt6.QtWidgets import (
 )
 
 from core.app_identity import is_store_package
+from core.appearance import AppearanceSettings, AppearanceStore
 from core.preview_player import PreviewPlayer
 from core.update_checker import (
     RELEASE_PUBLIC_KEY, UpdateCancelled, UpdateSecurityError,
     check_download_compatibility, check_for_update, download_update,
 )
 from core.version import APP_VERSION, UPDATE_SEQUENCE
+from gui.appearance_dialog import AppearanceDialog
+from gui.background import BackgroundWidget, load_background_image
 from gui.library_tab import LibraryTab
 from gui.log_tab import PlayLogTab
 from gui.log_texts import NAV_LOG_TEXT
@@ -50,6 +54,7 @@ from gui.theme import (
     STATE_SUCCESS,
     STATE_WARNING,
     SURFACE_3,
+    appearance_qss,
 )
 from gui.upload_tab import UploadTab
 from gui.widgets import AppDialog
@@ -162,6 +167,7 @@ class TitleBar(QWidget):
     def __init__(self):
         super().__init__()
         self.setObjectName("TitleBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setFixedHeight(TITLE_BAR_HEIGHT)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 0, 0)
@@ -220,12 +226,14 @@ class MainWindow(QMainWindow):
         event_log_dir=None,
         export_dir=None,
         legacy_libraries=None,
+        data_dir=None,
     ):
         super().__init__()
         self._cfg = cfg
         self._db = db
         self._player = player
         self._config_path = config_path
+        self._appearance_store = AppearanceStore(data_dir if data_dir is not None else db.data_dir)
         # 游戏档位(M3 起由 main.py 注入):当前激活档位与全部候选档位。
         # M4 在演奏控制页消费它们(档位下拉 + 按档位组装 CompileParams)。
         self._profile = profile
@@ -274,6 +282,7 @@ class MainWindow(QMainWindow):
         )
 
         self._build_ui()
+        self._load_appearance()
         if db.pre_migration_backup_path:
             backup_message = f"曲库升级前已自动备份到 {db.pre_migration_backup_path}"
             self.set_status(backup_message)
@@ -379,7 +388,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _build_ui(self):
-        root = QWidget()
+        root = BackgroundWidget()
         root.setObjectName("AppRoot")
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -419,6 +428,11 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
+        self.appearance_btn = QPushButton("外观设置")
+        self.appearance_btn.setObjectName("BtnSecondary")
+        self.appearance_btn.clicked.connect(self._open_appearance)
+        sidebar_layout.addWidget(self.appearance_btn)
+
         self.update_btn = QPushButton("Store 更新" if self._store_package else "检查更新")
         self.update_btn.setObjectName("BtnSecondary")
         if self._store_package:
@@ -433,6 +447,7 @@ class MainWindow(QMainWindow):
         body.addWidget(sidebar)
 
         self.stack = QStackedWidget()
+        self.stack.setObjectName("MainPageStack")
         self.stack.addWidget(self.upload_tab)
         self.stack.addWidget(self.library_tab)
         self.stack.addWidget(self.player_tab)
@@ -443,6 +458,11 @@ class MainWindow(QMainWindow):
             log_kwargs["export_dir"] = self._export_dir
         self.log_tab = PlayLogTab(**log_kwargs)
         self.stack.addWidget(self.log_tab)
+        # QScrollArea.setWidget 会开启自动填底；让滚动内容透出固定根背景。
+        for scroll in self.stack.findChildren(QScrollArea):
+            scroll.viewport().setAutoFillBackground(False)
+            if scroll.widget() is not None:
+                scroll.widget().setAutoFillBackground(False)
         body.addWidget(self.stack, 1)
 
         root_layout.addLayout(body, 1)
@@ -483,6 +503,39 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(root)
         self.nav.setCurrentRow(0)
+
+    def _load_appearance(self):
+        self._appearance = self._appearance_store.load()
+        self._background_image = QImage()
+        warning = self._appearance_store.warning
+        if self._appearance.image_path:
+            try:
+                self._background_image = load_background_image(
+                    self._appearance_store.image_file(self._appearance.image_path)
+                )
+            except (OSError, ValueError):
+                self._appearance = AppearanceSettings()
+                warning = "背景图片无法读取，已使用默认背景"
+        self._apply_appearance(self._appearance, self._background_image)
+        if warning:
+            self.set_status(warning)
+
+    def _apply_appearance(self, settings, image):
+        root = self.centralWidget()
+        root.set_background(settings, image)
+        stylesheet = appearance_qss(settings)
+        if root.styleSheet() != stylesheet:
+            root.setStyleSheet(stylesheet)
+
+    def _open_appearance(self):
+        dialog = AppearanceDialog(self._appearance_store, self._appearance, self._background_image, self)
+        dialog.preview_changed.connect(self._apply_appearance)
+        if dialog.exec() == AppearanceDialog.DialogCode.Accepted:
+            self._appearance = dialog.settings
+            self._background_image = dialog.image
+            self._apply_appearance(self._appearance, self._background_image)
+            self.set_status("外观设置已保存")
+        dialog.deleteLater()
 
     def _switch_page(self, row: int):
         self.stack.setCurrentIndex(row)
@@ -660,6 +713,8 @@ class MainWindow(QMainWindow):
         return None
 
     def eventFilter(self, obj, event):
+        if isinstance(obj, QWidget) and obj.window() is not self:
+            return super().eventFilter(obj, event)
         et = event.type()
         if et == QEvent.Type.MouseMove:
             gpos = event.globalPosition().toPoint()

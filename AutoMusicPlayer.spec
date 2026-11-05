@@ -2,7 +2,7 @@
 # PyInstaller 打包配置:体积优化版
 #   1. 排除用不到的 PyQt6 子模块与第三方库
 #   2. 过滤 Qt 的无用 DLL(opengl32sw/d3dcompiler/Network/Pdf/Svg/Qml/Multimedia 等)
-#      与插件(仅保留 platforms + styles)
+#      与插件(保留 platforms + styles + JPEG 背景解码)
 # 打包: python -m PyInstaller --noconfirm --clean AutoMusicPlayer.spec
 
 import fnmatch
@@ -79,9 +79,9 @@ def _keep(entry_name: str) -> bool:
     # 同名 ICU，PyInstaller 会误收集并遮蔽 System32，导致 QtCore 找不到导出过程。
     if fnmatch.fnmatch(base, "icu*.dll"):
         return False
-    # Qt 插件:仅保留窗口平台与窗口样式
+    # PNG 解码内置于 QtGui；JPEG 背景导入需要额外保留 qjpeg 插件。
     if "/qt6/plugins/" in n:
-        return "/platforms/" in n or "/styles/" in n
+        return "/platforms/" in n or "/styles/" in n or n.endswith("/imageformats/qjpeg.dll")
     # Qt DLL 目录:保留 Core/Gui/Widgets + 所有运行时依赖(修复 QtCore 加载失败)
     if "/qt6/bin/" in n and n.endswith(".dll"):
         # 保留 Qt6 核心模块
