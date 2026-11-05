@@ -10,11 +10,12 @@ import sys
 import time
 
 from pynput import keyboard as pk
-from PyQt6.QtCore import QEvent, QSettings, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
+from PyQt6.QtCore import QEvent, QSettings, QStandardPaths, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QCursor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,6 +23,8 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QProgressDialog,
+    QScrollArea,
     QSizeGrip,
     QStackedWidget,
     QVBoxLayout,
@@ -29,9 +32,15 @@ from PyQt6.QtWidgets import (
 )
 
 from core.app_identity import is_store_package
+from core.appearance import AppearanceSettings, AppearanceStore
 from core.preview_player import PreviewPlayer
-from core.update_checker import check_for_update
+from core.update_checker import (
+    RELEASE_PUBLIC_KEY, UpdateCancelled, UpdateSecurityError,
+    check_download_compatibility, check_for_update, download_update,
+)
 from core.version import APP_VERSION, UPDATE_SEQUENCE
+from gui.appearance_dialog import AppearanceDialog
+from gui.background import BackgroundWidget, load_background_image
 from gui.library_tab import LibraryTab
 from gui.log_tab import PlayLogTab
 from gui.log_texts import NAV_LOG_TEXT
@@ -45,6 +54,7 @@ from gui.theme import (
     STATE_SUCCESS,
     STATE_WARNING,
     SURFACE_3,
+    appearance_qss,
 )
 from gui.upload_tab import UploadTab
 from gui.widgets import AppDialog
@@ -157,6 +167,7 @@ class TitleBar(QWidget):
     def __init__(self):
         super().__init__()
         self.setObjectName("TitleBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setFixedHeight(TITLE_BAR_HEIGHT)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 0, 0)
@@ -181,6 +192,22 @@ class TitleBar(QWidget):
         layout.addWidget(self.btn_close)
 
 
+class _UpdateWorker(QThread):
+    progress = pyqtSignal(int)
+
+    def __init__(self, operation, parent):
+        super().__init__(parent)
+        self.operation = operation
+        self.result = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.result = self.operation(self)
+        except Exception as exc:
+            self.error = exc
+
+
 class MainWindow(QMainWindow):
     hotkey_play_requested = pyqtSignal()
     hotkey_stop_requested = pyqtSignal()
@@ -198,12 +225,15 @@ class MainWindow(QMainWindow):
         preview_player=None,
         event_log_dir=None,
         export_dir=None,
+        legacy_libraries=None,
+        data_dir=None,
     ):
         super().__init__()
         self._cfg = cfg
         self._db = db
         self._player = player
         self._config_path = config_path
+        self._appearance_store = AppearanceStore(data_dir if data_dir is not None else db.data_dir)
         # 游戏档位(M3 起由 main.py 注入):当前激活档位与全部候选档位。
         # M4 在演奏控制页消费它们(档位下拉 + 按档位组装 CompileParams)。
         self._profile = profile
@@ -212,6 +242,8 @@ class MainWindow(QMainWindow):
         self._event_log_dir = event_log_dir
         self._export_dir = export_dir
         self._store_package = is_store_package()
+        self._update_worker = None
+        self._update_progress = None
         self._preview_player = (
             preview_player if preview_player is not None else PreviewPlayer(self)
         )
@@ -250,6 +282,18 @@ class MainWindow(QMainWindow):
         )
 
         self._build_ui()
+        self._load_appearance()
+        if db.pre_migration_backup_path:
+            backup_message = f"曲库升级前已自动备份到 {db.pre_migration_backup_path}"
+            self.set_status(backup_message)
+            self.library_tab.location_label.setText(
+                f"{self.library_tab.location_label.text()}\n{backup_message}"
+            )
+        if legacy_libraries:
+            # The candidate list was captured before ScoreDB created the empty library.
+            QTimer.singleShot(0, lambda: self.library_tab.recover_from(
+                legacy_libraries[0], title="发现旧曲库"
+            ))
         self.hotkey_play_requested.connect(self.player_tab.mini_play)
         self.hotkey_stop_requested.connect(self.player_tab.mini_stop)
 
@@ -282,7 +326,7 @@ class MainWindow(QMainWindow):
 
         self.player_tab.refresh()
 
-        # 第一阶段只在正式打包应用中按间隔检查并提示；开发/测试运行不访问
+        # 只在正式打包应用中按间隔检查并提示；开发/测试运行不访问
         # 发布镜像，手动按钮仍可用于验证配置。
         update_cfg = cfg.get("update") or {}
         if (
@@ -334,13 +378,17 @@ class MainWindow(QMainWindow):
         if self._event_player is not None:
             self._event_player.shutdown()
         self._preview_player.shutdown()
+        if self._update_worker is not None:
+            self._update_worker.requestInterruption()
+            self._update_worker.wait()
+            self._update_worker = None
         try:
             self._db.close()
         except Exception:
             pass
 
     def _build_ui(self):
-        root = QWidget()
+        root = BackgroundWidget()
         root.setObjectName("AppRoot")
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -380,12 +428,17 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._switch_page)
         sidebar_layout.addWidget(self.nav, 1)
 
-        update_btn = QPushButton("Store 更新" if self._store_package else "检查更新")
-        update_btn.setObjectName("BtnSecondary")
+        self.appearance_btn = QPushButton("外观设置")
+        self.appearance_btn.setObjectName("BtnSecondary")
+        self.appearance_btn.clicked.connect(self._open_appearance)
+        sidebar_layout.addWidget(self.appearance_btn)
+
+        self.update_btn = QPushButton("Store 更新" if self._store_package else "检查更新")
+        self.update_btn.setObjectName("BtnSecondary")
         if self._store_package:
-            update_btn.setToolTip("Store 版由 Microsoft Store 管理主程序更新")
-        update_btn.clicked.connect(self._check_updates)
-        sidebar_layout.addWidget(update_btn)
+            self.update_btn.setToolTip("Store 版由 Microsoft Store 管理主程序更新")
+        self.update_btn.clicked.connect(self._check_updates)
+        sidebar_layout.addWidget(self.update_btn)
 
         footer = QLabel(f"v{APP_VERSION}")
         footer.setObjectName("SidebarFooter")
@@ -394,6 +447,7 @@ class MainWindow(QMainWindow):
         body.addWidget(sidebar)
 
         self.stack = QStackedWidget()
+        self.stack.setObjectName("MainPageStack")
         self.stack.addWidget(self.upload_tab)
         self.stack.addWidget(self.library_tab)
         self.stack.addWidget(self.player_tab)
@@ -404,6 +458,11 @@ class MainWindow(QMainWindow):
             log_kwargs["export_dir"] = self._export_dir
         self.log_tab = PlayLogTab(**log_kwargs)
         self.stack.addWidget(self.log_tab)
+        # QScrollArea.setWidget 会开启自动填底；让滚动内容透出固定根背景。
+        for scroll in self.stack.findChildren(QScrollArea):
+            scroll.viewport().setAutoFillBackground(False)
+            if scroll.widget() is not None:
+                scroll.widget().setAutoFillBackground(False)
         body.addWidget(self.stack, 1)
 
         root_layout.addLayout(body, 1)
@@ -445,6 +504,39 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self.nav.setCurrentRow(0)
 
+    def _load_appearance(self):
+        self._appearance = self._appearance_store.load()
+        self._background_image = QImage()
+        warning = self._appearance_store.warning
+        if self._appearance.image_path:
+            try:
+                self._background_image = load_background_image(
+                    self._appearance_store.image_file(self._appearance.image_path)
+                )
+            except (OSError, ValueError):
+                self._appearance = AppearanceSettings()
+                warning = "背景图片无法读取，已使用默认背景"
+        self._apply_appearance(self._appearance, self._background_image)
+        if warning:
+            self.set_status(warning)
+
+    def _apply_appearance(self, settings, image):
+        root = self.centralWidget()
+        root.set_background(settings, image)
+        stylesheet = appearance_qss(settings)
+        if root.styleSheet() != stylesheet:
+            root.setStyleSheet(stylesheet)
+
+    def _open_appearance(self):
+        dialog = AppearanceDialog(self._appearance_store, self._appearance, self._background_image, self)
+        dialog.preview_changed.connect(self._apply_appearance)
+        if dialog.exec() == AppearanceDialog.DialogCode.Accepted:
+            self._appearance = dialog.settings
+            self._background_image = dialog.image
+            self._apply_appearance(self._appearance, self._background_image)
+            self.set_status("外观设置已保存")
+        dialog.deleteLater()
+
     def _switch_page(self, row: int):
         self.stack.setCurrentIndex(row)
 
@@ -478,8 +570,8 @@ class MainWindow(QMainWindow):
         self.player_tab.rearm_focus_watch()
 
     def _check_updates(self, silent=False):
-        """第一阶段只检查并提示；不下载、不替换当前 EXE。"""
-
+        if self._update_worker is not None:
+            return
         if self._store_package:
             if not silent:
                 AppDialog.show_info(
@@ -502,33 +594,88 @@ class MainWindow(QMainWindow):
                     "当前未配置签名更新 manifest。请先完成发布端公钥和双镜像配置。",
                 )
             return
-        try:
-            result = check_for_update(
-                APP_VERSION,
-                urls,
-                str(update_cfg.get("public_key") or ""),
-                current_sequence=UPDATE_SEQUENCE,
-            )
-        except Exception as exc:
-            if not silent:
-                AppDialog.show_warning(self, "检查更新失败", str(exc))
-            return
-        if result.update_available and result.manifest is not None:
-            notes = result.manifest.release_notes.strip()
-            message = f"发现新版本 v{result.manifest.version}。\n\n{notes}".strip()
-            AppDialog.show_info(
-                self,
-                "发现更新",
-                message + "\n\n当前阶段仅提示，不会自动下载或替换文件。",
-            )
-            self.set_status(f"发现更新 v{result.manifest.version}")
-            return
+        self._start_update_job(
+            lambda worker: check_for_update(
+                APP_VERSION, urls, RELEASE_PUBLIC_KEY, current_sequence=UPDATE_SEQUENCE,
+                cancelled=worker.isInterruptionRequested,
+            ),
+            self._offer_download, silent=silent, label="正在检查更新…",
+        )
+
+    def _start_update_job(self, operation, on_success, *, silent=False, label, downloading=False):
+        worker = _UpdateWorker(operation, self)
+        self._update_worker = worker
+        self.update_btn.setEnabled(False)
+        if not silent:
+            dialog = QProgressDialog(label, "取消", 0, 100 if downloading else 0, self)
+            dialog.setWindowTitle("程序更新")
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.canceled.connect(worker.requestInterruption)
+            worker.progress.connect(dialog.setValue)
+            self._update_progress = dialog
+            dialog.show()
+
+        def finished():
+            if self._update_worker is not worker:
+                return
+            self._update_worker = None
+            self.update_btn.setEnabled(True)
+            if self._update_progress is not None:
+                self._update_progress.hide()
+                self._update_progress.deleteLater()
+                self._update_progress = None
+            worker.deleteLater()
+            if isinstance(worker.error, UpdateCancelled):
+                self.set_status("已取消更新任务")
+            elif worker.error is not None:
+                if not silent:
+                    AppDialog.show_warning(self, "更新任务失败", str(worker.error))
+            else:
+                on_success(worker.result, silent)
+
+        worker.finished.connect(finished)
+        worker.start()
+
+    def _offer_download(self, result, silent):
         if result.error:
             if not silent:
                 AppDialog.show_warning(self, "检查更新失败", result.error)
-        else:
+            return
+        if not result.update_available:
             if not silent:
                 AppDialog.show_info(self, "检查更新", "当前已是最新版本")
+            return
+        manifest = result.manifest
+        self.set_status(f"发现更新 v{manifest.version}")
+        try:
+            check_download_compatibility(manifest, APP_VERSION)
+        except UpdateSecurityError as exc:
+            AppDialog.show_warning(self, "需要手动更新", str(exc))
+            return
+        if not AppDialog.confirm(
+            self, "下载更新",
+            f"发现 v{manifest.version}（{manifest.size / 1048576:.1f} MB）。\n\n"
+            f"{manifest.release_notes}\n\n选择保存目录并下载新版 EXE？完成后可手动替换旧程序。",
+        ):
+            return
+        downloads = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+        directory = QFileDialog.getExistingDirectory(self, "选择新版程序的保存目录", downloads)
+        if directory:
+            self._start_update_job(
+                lambda worker: download_update(
+                    manifest, directory, current_version=APP_VERSION, current_sequence=UPDATE_SEQUENCE,
+                    cancelled=worker.isInterruptionRequested, progress=worker.progress.emit,
+                ),
+                self._download_finished, label=f"正在下载 v{manifest.version} 并校验…", downloading=True,
+            )
+
+    def _download_finished(self, path, silent):
+        self.set_status("新版程序下载完成")
+        AppDialog.show_info(
+            self, "更新已下载", f"已校验文件大小和 SHA-256。\n{path}\n\n"
+            "请先退出程序并备份曲库，再用下载的 EXE 替换原目录中的程序文件，保留原来的配置和数据目录。",
+        )
 
     def set_status(self, text: str):
         self.status_label.setText(text)
@@ -566,6 +713,8 @@ class MainWindow(QMainWindow):
         return None
 
     def eventFilter(self, obj, event):
+        if isinstance(obj, QWidget) and obj.window() is not self:
+            return super().eventFilter(obj, event)
         et = event.type()
         if et == QEvent.Type.MouseMove:
             gpos = event.globalPosition().toPoint()

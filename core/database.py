@@ -27,6 +27,9 @@ class ScoreDB:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.schema_version_before = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if self.schema_version_before > self.SCHEMA_VERSION:
+            self.close()
+            raise ValueError("曲库由更高版本的程序创建，请使用新版程序打开")
         self.pre_migration_backup_path = None
         if self.schema_version_before < self.SCHEMA_VERSION and os.path.getsize(self.db_path) > 0:
             self.pre_migration_backup_path = self._create_migration_backup()

@@ -1,4 +1,4 @@
-"""第一阶段应用内更新检查：只拉取并验证签名 manifest，不下载/替换文件。
+"""便携版更新检查及经用户选择的独立 EXE 下载。
 
 发布侧应把同一份 manifest 放在 GitHub/Gitee 两个镜像，客户端用内嵌的
 Ed25519 公钥验证 canonical JSON。镜像只负责可用性，不能改变信任根。
@@ -7,8 +7,12 @@ Ed25519 公钥验证 canonical JSON。镜像只负责可用性，不能改变信
 from __future__ import annotations
 
 import base64
+import hashlib
+import http.client
 import json
-import ssl
+import os
+from pathlib import Path
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,9 +20,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
 
+from core.database import ScoreDB
+
 
 MAX_MANIFEST_BYTES = 1 * 1024 * 1024
 MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024
+RELEASE_PUBLIC_KEY = "6QF3M1S8xGQslxyJc2RLlCm8xy0HTRYXZvXk6RgMInY="
 _VERSION_RE = re.compile(r"^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?$")
 
 
@@ -28,6 +35,32 @@ class UpdateCheckError(RuntimeError):
 
 class UpdateSecurityError(UpdateCheckError):
     pass
+
+
+class UpdateCancelled(UpdateCheckError):
+    pass
+
+
+def _check_cancelled(cancelled):
+    if cancelled and cancelled():
+        raise UpdateCancelled("已取消更新任务")
+
+
+class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme != "https":
+            raise UpdateSecurityError("拒绝更新请求重定向到非 HTTPS 地址")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_https(url, *, timeout, accept):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise UpdateSecurityError("更新地址必须使用 HTTPS")
+    request = urllib.request.Request(
+        url, headers={"Accept": accept, "User-Agent": "AutoMusicPlayer/UpdateCheck"}
+    )
+    return urllib.request.build_opener(_HttpsRedirectHandler()).open(request, timeout=timeout)
 
 
 def _version_key(value: str):
@@ -106,9 +139,14 @@ class UpdateManifest:
             raise UpdateCheckError("更新 manifest 的 schema 版本无效") from exc
         if schema_version != 1:
             raise UpdateCheckError(f"不支持的更新 manifest 版本：{schema_version}")
+        if db_schema_version < 0:
+            raise UpdateCheckError("更新 manifest 的 db_schema_version 不能为负数")
         version = str(value["version"]).strip().lstrip("vV")
         if not _VERSION_RE.fullmatch(version):
             raise UpdateCheckError("更新 manifest 的 version 无效")
+        min_supported = str(value.get("min_supported", "0")).strip().lstrip("vV")
+        if min_supported != "0" and not _VERSION_RE.fullmatch(min_supported):
+            raise UpdateCheckError("更新 manifest 的 min_supported 无效")
         sha256 = str(value["sha256"]).lower()
         if len(sha256) != 64 or any(ch not in "0123456789abcdef" for ch in sha256):
             raise UpdateCheckError("更新 manifest 的 sha256 无效")
@@ -116,7 +154,7 @@ class UpdateManifest:
             schema_version=schema_version,
             version=version,
             sequence=sequence,
-            min_supported=str(value.get("min_supported", "0")),
+            min_supported=min_supported,
             urls=tuple(normalized_urls),
             size=size,
             sha256=sha256,
@@ -190,18 +228,10 @@ class UpdateCheckResult:
 
 
 def fetch_manifest(url: str, *, timeout_s: float = 8.0) -> dict:
-    parsed = urllib.parse.urlparse(str(url))
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise UpdateSecurityError("更新 manifest 地址必须使用 HTTPS")
-    request = urllib.request.Request(
-        str(url),
-        headers={"Accept": "application/json", "User-Agent": "AutoMusicPlayer/UpdateCheck"},
-    )
-    context = ssl.create_default_context()
     try:
-        with urllib.request.urlopen(request, timeout=max(1.0, float(timeout_s)), context=context) as response:
+        with _open_https(str(url), timeout=max(1.0, float(timeout_s)), accept="application/json") as response:
             payload = response.read(MAX_MANIFEST_BYTES + 1)
-    except (OSError, urllib.error.URLError) as exc:
+    except (OSError, http.client.HTTPException, ValueError) as exc:
         raise UpdateCheckError(f"获取更新 manifest 失败：{exc}") from exc
     if len(payload) > MAX_MANIFEST_BYTES:
         raise UpdateCheckError("更新 manifest 超过 1 MB")
@@ -219,21 +249,26 @@ def check_for_update(
     *,
     current_sequence: int = 0,
     timeout_s: float = 8.0,
+    cancelled=None,
 ) -> UpdateCheckResult:
-    """验证所有镜像并选择最高序列；第一阶段只返回提示信息。"""
+    """验证各镜像的清单并选择最高序列。"""
 
     errors = []
     candidates = []
     for url in tuple(manifest_urls or ()):
+        _check_cancelled(cancelled)
         try:
             manifest = UpdateManifest.from_dict(fetch_manifest(url, timeout_s=timeout_s))
             verify_manifest(manifest, public_key_b64)
             _check_expiry(manifest)
             if manifest.sequence < int(current_sequence):
                 raise UpdateSecurityError("拒绝低于当前序列号的更新")
+            if _version_key(manifest.version) < _version_key(current_version):
+                raise UpdateSecurityError("拒绝更低版本的更新")
             candidates.append((manifest, str(url)))
         except UpdateCheckError as exc:
             errors.append(f"{url}: {exc}")
+    _check_cancelled(cancelled)
     if candidates:
         manifest, source_url = max(
             candidates,
@@ -247,6 +282,86 @@ def check_for_update(
     return UpdateCheckResult(False, error="；".join(errors) or "未配置更新 manifest")
 
 
+def check_download_compatibility(manifest, current_version):
+    """Apply data/version gates both in the UI and before download I/O."""
+    if manifest.db_schema_version > ScoreDB.SCHEMA_VERSION:
+        raise UpdateSecurityError(
+            f"新版曲库格式为 v{manifest.db_schema_version}，当前程序支持 v{ScoreDB.SCHEMA_VERSION}。"
+            "请先备份曲库，再从发布页手动更新。"
+        )
+    if _version_key(current_version) < _version_key(manifest.min_supported):
+        raise UpdateSecurityError(
+            f"当前版本 v{current_version} 低于此更新要求的 v{manifest.min_supported}。"
+            "请先备份曲库，再从发布页手动更新。"
+        )
+
+
+def download_update(manifest, directory, *, current_version, current_sequence, cancelled=None, progress=None):
+    """下载到所选目录，校验后原子发布为新文件，绝不覆盖已有文件。"""
+    manifest = UpdateManifest.from_dict(manifest.raw)
+    verify_manifest(manifest, RELEASE_PUBLIC_KEY)
+    _check_expiry(manifest)
+    check_download_compatibility(manifest, current_version)
+    version_key = _version_key(manifest.version)
+    current_key = _version_key(current_version)
+    if (manifest.sequence < current_sequence or version_key < current_key
+            or (manifest.sequence == current_sequence and version_key == current_key)):
+        raise UpdateSecurityError("该更新不高于当前版本或序列号")
+
+    directory = Path(directory).resolve(strict=True)
+    target = directory / f"AutoMusicPlayer-v{manifest.version}.exe"
+    if target.exists():
+        raise FileExistsError(f"文件已存在，请选择另一个保存目录：{target}")
+    errors = []
+    for url in manifest.urls:
+        _check_cancelled(cancelled)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=directory, suffix=".part", delete=False) as stream:
+                temporary = Path(stream.name)
+                try:
+                    _stream_package(url, manifest, stream, cancelled, progress)
+                except (UpdateSecurityError, urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError) as exc:
+                    errors.append(f"{urllib.parse.urlsplit(url).netloc}：{exc}")
+                    continue
+                stream.flush()
+                os.fsync(stream.fileno())
+            _check_expiry(manifest)
+            _check_cancelled(cancelled)
+            # Windows rename refuses an existing destination; POSIX link has the same no-clobber guarantee.
+            if os.name == "nt":
+                os.rename(temporary, target)
+            else:
+                os.link(temporary, target)
+            return target
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    raise UpdateCheckError("所有更新镜像下载失败：" + "；".join(errors))
+
+
+def _stream_package(url, manifest, stream, cancelled, progress):
+    digest = hashlib.sha256()
+    received = 0
+    with _open_https(url, timeout=8.0, accept="application/octet-stream") as response:
+        if progress:
+            progress(0)
+        while True:
+            _check_cancelled(cancelled)
+            chunk = response.read1(256 * 1024)
+            if not chunk:
+                break
+            received += len(chunk)
+            if received > manifest.size:
+                raise UpdateSecurityError("更新文件超出清单大小")
+            stream.write(chunk)
+            digest.update(chunk)
+            if progress:
+                progress(received * 100 // manifest.size)
+    if received != manifest.size or digest.hexdigest() != manifest.sha256:
+        raise UpdateSecurityError("更新文件大小或 SHA-256 与签名清单不符")
+
+
 __all__ = [
     "UpdateCheckError",
     "UpdateCheckResult",
@@ -254,4 +369,8 @@ __all__ = [
     "UpdateSecurityError",
     "check_for_update",
     "verify_manifest",
+    "RELEASE_PUBLIC_KEY",
+    "UpdateCancelled",
+    "download_update",
+    "check_download_compatibility",
 ]

@@ -4,6 +4,13 @@ from core.transport import MIN_GAME_NOTE_MS, normalize_transport_preferences, pr
 
 
 class TestPrepareScore(unittest.TestCase):
+    def test_explicit_per_note_accidentals_survive_slice_and_transpose(self):
+        notes = [{"notes": ["mid_1", "mid_3"], "dur": 1.0, "semitones": [0, 1]}]
+        self.assertEqual(prepare_score(notes).notes, notes)
+        moved = prepare_score(notes, transpose=1).notes[0]
+        self.assertEqual(moved["notes"], ["mid_1", "mid_4"])
+        self.assertEqual(moved["semitones"], [1, 1])
+
     def test_slice_is_end_exclusive_and_preserves_storage(self):
         notes = [
             {"notes": ["mid_1"], "dur": 1.0},

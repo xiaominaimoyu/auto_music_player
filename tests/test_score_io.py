@@ -101,6 +101,35 @@ class TestJson(unittest.TestCase):
         with self.assertRaises(ValueError):
             import_json(self.path)
 
+    def test_bad_version_reports_the_field(self):
+        bad = {
+            "format": "auto-music-player-score",
+            "version": "v2",
+            "name": "x",
+            "bpm": 100,
+            "notes": SCORE["notes"],
+        }
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(bad, f)
+        with self.assertRaises(ValueError) as caught:
+            import_json(self.path)
+        self.assertIn("version", str(caught.exception))
+        self.assertIn("v2", str(caught.exception))
+
+    def test_per_note_semitones_roundtrip_for_mixed_chords(self):
+        notes = [{
+            "notes": ["mid_1", "mid_2", "mid_3"],
+            "dur": 1.0,
+            "semitones": [0, 1, 0],
+        }]
+        payload = {"name": "混合和弦", "bpm_default": 100, "notes": notes}
+        export_json(self.path, payload)
+        result = import_json(self.path)
+        self.assertEqual(result.notes[0]["semitones"], [0, 1, 0])
+        from core.ir import from_storage
+        chord = from_storage(result.notes)[0]
+        self.assertEqual([note.semitone for note in chord.notes], [0, 1, 0])
+
     def test_import_raw_list(self):
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(SCORE["notes"], f)

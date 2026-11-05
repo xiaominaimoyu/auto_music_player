@@ -5,9 +5,11 @@ import sys
 import wave
 
 import pytest
+from PyQt6.QtCore import Qt
 
 from core.preview_player import (
     MIDI_ACOUSTIC_GRAND_PIANO,
+    PREVIEW_INSTRUMENTS,
     _midi_message,
     note_frequencies,
     note_frequency,
@@ -59,6 +61,9 @@ def test_numbered_notation_uses_natural_major_scale_midi_notes():
     assert note_midi_numbers(
         {"notes": ["mid_1", "mid_3", "mid_5"], "dur": 1.0}
     ) == [60, 64, 67]
+    assert note_midi_numbers({"notes": ["mid_1", "mid_3"], "semitones": [1, 0]}) == [61, 64]
+    with pytest.raises(ValueError, match="等长"):
+        note_midi_numbers({"notes": ["mid_1"], "semitones": []})
 
 
 def test_general_midi_program_is_acoustic_grand_piano():
@@ -94,16 +99,17 @@ def test_preview_player_sends_midi_note_events_without_real_audio(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     player = PreviewPlayer()
     midi = FakeMidiOutput()
-    player._create_midi_output = lambda: midi
+    monkeypatch.setattr(player, "_create_midi_output", lambda program: midi)
     finished = []
-    player.finished.connect(finished.append)
+    player.finished.connect(finished.append, Qt.ConnectionType.DirectConnection)
 
-    player._run(
+    assert player.play(
         [{"notes": ["mid_1", "mid_3", "mid_5"], "dur": 0.0}],
         120,
         0.0,
         "",
     )
+    player._thread.join(1)
 
     assert finished == [True]
     assert midi.events == [
@@ -121,12 +127,12 @@ def test_preview_player_sends_midi_note_events_without_real_audio(monkeypatch):
 def test_preview_player_emits_finished_for_stop_without_audio(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     player = PreviewPlayer()
-    player._create_midi_output = lambda: pytest.fail("已停止时不应打开 MIDI 音源")
+    player._create_midi_output = lambda program: pytest.fail("已停止时不应打开 MIDI 音源")
     player._stop_event.set()
     finished = []
     player.finished.connect(finished.append)
 
-    player._run([{"notes": ["mid_1"], "dur": 1.0}], 120, 0.0, "")
+    player._run([(0.0, 60, True, 1)], 1, 0)
 
     assert finished == [False]
 
@@ -140,3 +146,44 @@ def test_stop_resets_active_midi_notes():
 
     assert player._stop_event.is_set()
     assert midi.events == [("reset",)]
+
+
+@pytest.mark.parametrize("requested_gap", [None, 30.0])
+def test_original_score_preserves_onsets_and_explicit_gap(monkeypatch, requested_gap):
+    player = PreviewPlayer()
+    timeline = []
+    def capture(schedule, count, program):
+        timeline.extend(schedule)
+        return True
+    monkeypatch.setattr(player, "_start", capture)
+    notes = [{"notes": ["mid_1"], "dur": 0.5}, {"notes": [], "dur": 0.25},
+             {"notes": ["mid_2"], "dur": 0.25}]
+    options = {} if requested_gap is None else {"gap_ms": requested_gap}
+    assert player.play(notes, bpm=120, **options)
+    starts = [at for at, pitch, down, _ in timeline if pitch is not None and down]
+    assert starts == [0.0, 375.0 + 2 * (requested_gap or 0)]
+
+
+@pytest.mark.parametrize("program", PREVIEW_INSTRUMENTS.values())
+def test_absolute_midi_timeline_uses_selected_program_and_trailing_rest(monkeypatch, program):
+    monkeypatch.setattr(sys, "platform", "win32")
+    player = PreviewPlayer()
+    midi = FakeMidiOutput()
+    opened = []
+    def open_midi(selected):
+        opened.append(selected)
+        return midi
+    monkeypatch.setattr(player, "_create_midi_output", open_midi)
+    deadlines = []
+    def record_deadline(stop_event, deadline):
+        deadlines.append(deadline)
+        return False
+    monkeypatch.setattr("core.preview_player.wait_until", record_deadline)
+
+    assert player.play_events([(20, 60, False), (0, 60, True), (0, 64, True),
+                               (20, 64, False)], program=program, duration_ms=60)
+    player._thread.join(1)
+    assert opened == [program]
+    assert midi.events == [("on", 60), ("on", 64), ("off", 60), ("off", 64),
+                           ("reset",), ("close",)]
+    assert [time - deadlines[0] for time in deadlines] == pytest.approx([0, 0, .020, .020, .060])

@@ -16,6 +16,7 @@
 Player(21 键路径)与 build_event_plan(编译器路径)共用同一份塑形结果。
 """
 
+import math
 import random
 import secrets
 from dataclasses import dataclass
@@ -43,10 +44,20 @@ class HumanizeParams:
     # 相邻起音抖动的相关系数。独立白噪声听起来像时钟抖动，适度相关更接近
     # 人在一个乐句内的连续动作；休止会重置该状态。
     jitter_correlation: float = 0.65
+    # 乐句内先赶后松的速度弧，整句求和约等于 0，不会把曲子越播越慢。
+    tempo_arc_ms: float = 8.0
+    # 每小节第一拍略提前，听感上有重音。0 表示关掉。
+    accent_ms: float = 4.0
+    # 和弦扫弦。0 表示同时按下；正数落在大约 8–25ms。
+    strum_ms: float = 12.0
 
     def __post_init__(self):
         if self.jitter_ms < 0 or self.breath_ms < 0 or self.leap_ms < 0:
             raise ValueError("humanize 幅度参数不能为负数")
+        if self.tempo_arc_ms < 0 or self.accent_ms < 0 or self.strum_ms < 0:
+            raise ValueError("humanize 幅度参数不能为负数")
+        if self.strum_ms > 25.0:
+            raise ValueError("strum_ms 不能大于 25")
         if self.min_gap_ms < 0:
             raise ValueError("min_gap_ms 不能为负数")
         if not 0.0 <= float(self.jitter_correlation) < 1.0:
@@ -111,6 +122,12 @@ def build_plan(
     prev_dur = None  # 上一个元素的时值(拍)
     prev_was_rest = False  # 上一个元素是否为休止
     correlated_jitter = 0.0
+    beat_cursor = 0.0
+    last_sounding = None
+    rho = float(p.jitter_correlation)
+    # x = ρx + (1-ρ)e 的稳态标准差是 σ·√((1-ρ)/(1+ρ))。
+    # 把高斯输入放大 √((1+ρ)/(1-ρ))，配置的 jitter_ms 才等于实际标准差。
+    jitter_scale = 1.0 if rho <= 0.0 else math.sqrt((1.0 + rho) / (1.0 - rho))
     for el in elements:
         dur = float(el.get("dur") or 0)
         ids = list(el.get("notes") or [])
@@ -121,22 +138,30 @@ def build_plan(
             prev_dur = dur
             prev_was_rest = True
             correlated_jitter = 0.0
+            beat_cursor += dur
             continue
 
-        independent_jitter = rng.gauss(0.0, p.jitter_ms)
+        independent_jitter = rng.gauss(0.0, p.jitter_ms * jitter_scale)
         correlated_jitter = (
-            float(p.jitter_correlation) * correlated_jitter
-            + (1.0 - float(p.jitter_correlation)) * independent_jitter
+            rho * correlated_jitter
+            + (1.0 - rho) * independent_jitter
         )
         offset = correlated_jitter
-        # 乐句边界:前一元素是休止(换气),或长音结尾(重新起手)
-        if prev_was_rest or (prev_dur is not None and prev_dur >= PHRASE_LONG_DUR):
-            offset += p.breath_ms * rng.uniform(0.6, 1.0)
+        # 换气从上一音的按住里借，不把下一音推离拍点，避免长曲越来越拖。
+        if p.breath_ms > 0 and (
+            prev_was_rest or (prev_dur is not None and prev_dur >= PHRASE_LONG_DUR)
+        ):
+            pull = p.breath_ms * rng.uniform(0.6, 1.0)
+            if last_sounding is not None:
+                previous = timings[last_sounding]
+                timings[last_sounding] = (previous[0], previous[1], pull)
         # 大跳进:换指需要一点额外时间
         pitch = _pitch_value(ids[0])
         if pitch is not None and prev_pitch is not None:
             if abs(pitch - prev_pitch) >= p.leap_threshold:
                 offset += p.leap_ms * rng.uniform(0.5, 1.0)
+        if p.accent_ms > 0 and _on_downbeat(beat_cursor):
+            offset -= p.accent_ms
 
         # 动态按住:按音符长度分档,同档内随机
         if dur <= 0.5:
@@ -148,10 +173,50 @@ def build_plan(
         hold_ratio = rng.uniform(lo, hi)
 
         timings.append((offset, hold_ratio))
+        last_sounding = len(timings) - 1
         prev_pitch = pitch if pitch is not None else prev_pitch
         prev_dur = dur
         prev_was_rest = False
+        beat_cursor += dur
+    _apply_tempo_arc(timings, elements, p.tempo_arc_ms)
     return HumanizePlan(tuple(timings), actual_seed)
+
+
+def _on_downbeat(beat_cursor: float) -> bool:
+    nearest = round(beat_cursor)
+    return abs(beat_cursor - nearest) <= 1e-6 and int(nearest) % 4 == 0
+
+
+def _apply_tempo_arc(timings, elements, arc_ms: float) -> None:
+    if arc_ms <= 0:
+        return
+    phrase = []
+
+    def flush():
+        count = len(phrase)
+        if count == 0:
+            return
+        for position, index in enumerate(phrase):
+            delta = arc_ms * math.sin(2.0 * math.pi * (position + 0.5) / count)
+            slot = timings[index]
+            timings[index] = (slot[0] + delta, slot[1], *slot[2:])
+        phrase.clear()
+
+    for index, element in enumerate(elements):
+        if not list(element.get("notes") or []):
+            flush()
+            continue
+        phrase.append(index)
+    flush()
+
+
+def timing_parts(slot):
+    """(offset_ms, hold_ratio, breath_pull_ms)。旧的二元组视为没有换气借用。"""
+
+    offset = float(slot[0])
+    ratio = slot[1]
+    pull = float(slot[2]) if len(slot) > 2 and slot[2] else 0.0
+    return offset, ratio, pull
 
 
 def plan_timings(

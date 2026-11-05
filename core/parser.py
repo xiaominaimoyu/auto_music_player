@@ -145,6 +145,10 @@ def _build_single(token: str):
     num = int(token[0])
     pitch, rest, semitone = _split_pitch_dur(token[1:])
     problem = None
+    extra_octave = rest.count("'") + rest.count(",")
+    if extra_octave:
+        problem = "多余的八度点已忽略，只保留高/中/低三档"
+        rest = rest.replace("'", "").replace(",", "")
     if num == 0:
         if token[1:2] in ("'", ","):
             problem = "休止符 0 不应带八度记号"
@@ -282,13 +286,22 @@ def _parse_line(line: str, *, strict_ai: bool = False):
     return notes, problems
 
 
-def parse_jianpu(text: str, *, collect: bool = False, strict_ai: bool = False):
+def parse_jianpu(text: str, *, collect: bool = False, strict_ai: bool = False,
+                  dialect: str = "community"):
     """解析规范化简谱文本。
+
+    dialect="community"(默认):三角洲社区记法。一个 `-` 把时值翻倍，单独的 `.`
+    表示低音点。已入库的文本必须继续走这条路径。
+    dialect="standard":每个 `-` 延长 1 拍，`.` 是附点，支持降号、连线和三连音。
 
     collect=False(默认):返回音符序列,无效记号静默跳过(宽容,兼容旧行为)。
     collect=True:返回 (音符序列, 错误列表),错误含行号/原文/原因。
     strict_ai=True:额外报告 AI 输出中相邻音符缺少空格的歧义；不改变返回数据格式。
     """
+    if dialect not in {"community", "standard"}:
+        raise ValueError("dialect 必须是 community 或 standard")
+    if dialect == "standard":
+        return _parse_standard(text, collect=collect)
     text = _normalize_ai_symbols(text)
     result = []
     errors = []
@@ -297,4 +310,154 @@ def parse_jianpu(text: str, *, collect: bool = False, strict_ai: bool = False):
         result.extend(notes)
         if collect:
             errors.extend(ParseError(line_no, token, reason) for token, reason in problems)
+    return (result, errors) if collect else result
+
+
+_FLAT_ENHARMONIC = {
+    1: (7, 0, -1),
+    2: (1, 1, 0),
+    3: (2, 1, 0),
+    4: (3, 0, 0),
+    5: (4, 1, 0),
+    6: (5, 1, 0),
+    7: (6, 1, 0),
+}
+_STD_NOTE_RE = re.compile(r"[b♭]?[0-7](?:'+|,+|#|b|♭|_|-|·|\.|~)*")
+_STD_GROUP_RE = re.compile(r"\{([^{}]+)\}([_\-·.]*)")
+
+
+def _standard_duration(text: str) -> float:
+    dashes = text.count("-")
+    unders = text.count("_")
+    dur = (1.0 + dashes) * (0.5 ** unders)
+    if "." in text or "·" in text:
+        dur *= 1.5
+    return dur
+
+
+def _lower_octave(pitch: str):
+    if pitch == "high":
+        return "mid", None
+    if pitch == "mid":
+        return "low", None
+    return "low", "降号已经低于低音区，仍记在低音"
+
+
+def _apply_flat(pitch: str, num: int):
+    target, semitone, octave_delta = _FLAT_ENHARMONIC[num]
+    warning = "降号已按等音记成可播放的音"
+    if octave_delta:
+        pitch, extra = _lower_octave(pitch)
+        if extra:
+            warning = extra
+    return pitch, target, semitone, warning
+
+
+def _standard_single(token: str):
+    tie = token.endswith("~")
+    body = token[:-1] if tie else token
+    flat = body[:1] in "b♭"
+    if flat:
+        body = body[1:]
+    num = int(body[0])
+    rest = body[1:]
+    sharp = "#" in rest
+    high = 0
+    while rest.startswith("'"):
+        high += 1
+        rest = rest[1:]
+    low = 0
+    while rest.startswith(","):
+        low += 1
+        rest = rest[1:]
+    warnings = []
+    if high and low:
+        warnings.append("高低音点写在一起，已按先出现的记号处理")
+    if high > 1 or low > 1:
+        warnings.append("多余的八度点已折回高/中/低三档")
+    if high:
+        pitch = "high"
+    elif low:
+        pitch = "low"
+    else:
+        pitch = "mid"
+    semitone = 1 if sharp else 0
+    if flat and 1 <= num <= 7:
+        pitch, num, semitone, flat_warning = _apply_flat(pitch, num)
+        warnings.append(flat_warning)
+    if num == 0:
+        return {"notes": [], "dur": _standard_duration(rest)}, tie, warnings
+    item = {"notes": [f"{pitch}_{num}"], "dur": _standard_duration(rest)}
+    if semitone:
+        item["semitone"] = 1
+    return item, tie, warnings
+
+
+def _same_pitch(left, right) -> bool:
+    return left.get("notes") == right.get("notes") and left.get("semitone", 0) == right.get("semitone", 0)
+
+
+def _parse_standard(text: str, *, collect: bool):
+    text = _normalize_ai_symbols(text).replace("♭", "b")
+    text = re.sub(r"#([0-7])", r"\1#", text)
+    result = []
+    errors = []
+    pending_tie = False
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip().replace("|", " ").replace("‖", " ")
+        if not line or _TUNE_LINE_RE.match(line) or _is_lyric_line(line):
+            continue
+        dash_only = line.replace(" ", "").replace("—", "-").replace("–", "-")
+        if dash_only and set(dash_only) <= {"-"}:
+            if result and result[-1]["notes"]:
+                result[-1]["dur"] = float(result[-1]["dur"]) + len(dash_only)
+            elif collect:
+                errors.append(ParseError(line_no, line, "延长线前面没有音符"))
+            continue
+        consumed = bytearray(len(line))
+        found = []
+        for match in _STD_GROUP_RE.finditer(line):
+            for index in range(match.start(), match.end()):
+                consumed[index] = 1
+            inner = [part for part in match.group(1).split() if part]
+            total = _standard_duration(match.group(2))
+            share = total / max(1, len(inner))
+            notes = []
+            for part in inner:
+                note, tie, warnings = _standard_single(part.rstrip("~"))
+                note = dict(note)
+                note["dur"] = share
+                notes.append((note, tie, warnings, part))
+            found.append((match.start(), notes))
+        for match in _STD_NOTE_RE.finditer(line):
+            if any(consumed[match.start():match.end()]):
+                continue
+            note, tie, warnings = _standard_single(match.group(0))
+            found.append((match.start(), [(note, tie, warnings, match.group(0))]))
+            for index in range(match.start(), match.end()):
+                consumed[index] = 1
+        found.sort(key=lambda item: item[0])
+        for _pos, group in found:
+            for note, tie, warnings, token in group:
+                if pending_tie and result and _same_pitch(result[-1], note):
+                    result[-1]["dur"] = float(result[-1]["dur"]) + float(note["dur"])
+                else:
+                    if pending_tie and collect:
+                        errors.append(ParseError(line_no, token, "连线两端音高不同，已保持分开"))
+                    result.append(note)
+                pending_tie = tie
+                if collect:
+                    errors.extend(ParseError(line_no, token, warning) for warning in warnings)
+        if collect:
+            run_start = None
+            for index in range(len(line) + 1):
+                char = line[index] if index < len(line) else " "
+                if index < len(line) and not consumed[index] and not char.isspace():
+                    if run_start is None:
+                        run_start = index
+                elif run_start is not None:
+                    errors.append(ParseError(
+                        line_no, line[run_start:index], "无法识别的内容",
+                    ))
+                    run_start = None
     return (result, errors) if collect else result

@@ -187,7 +187,10 @@ class TestPlayerTabTransport(unittest.TestCase):
             self.assertEqual(len(tab._active_notes), 2)
             tab._play()
             self.assertEqual(tab._playback_gap_ms, 0.0)
-            self.assertIsNone(tab._playback_humanize)
+            self.assertIsNotNone(tab._playback_humanize)
+            self.assertEqual(tab._playback_humanize.breath_ms, 0.0)
+            self.assertLessEqual(tab._playback_humanize.jitter_ms, 4.0)
+            self.assertEqual(tab._playback_humanize.strum_ms, 0.0)
             self.assertGreater(tab._transport_degradation_count, 0)
             tab._countdown_timer.stop()
         finally:

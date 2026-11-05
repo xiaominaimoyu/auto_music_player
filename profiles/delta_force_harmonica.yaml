@@ -42,5 +42,8 @@ modifier_policy: octave_first
 # 因此降级时取最高音，避免把整首歌弹成低音伴奏。
 chord_policy: highest
 
+# 试听页默认音色:本档位就是口琴玩法,试听与游戏内听到的音色一致。
+preview_instrument: 口琴
+
 # 三角洲没有 21 键旧模型
 legacy_keymap: null

@@ -150,12 +150,13 @@ def prepare_score(
 ) -> PreparedScore:
     """Slice and transpose canonical storage without touching playback code.
 
-    ``end_index`` is exclusive.  A mixed-accidental chord cannot be represented
-    by the frozen storage schema (one ``semitone`` flag per element), so it is
-    reduced deterministically to its highest pitch with a degradation record.
+    ``end_index`` is exclusive. Explicit per-note accidentals are preserved.
+    Older callers using a shared accidental retain their highest-note fallback
+    when transposition produces a mixed-accidental chord.
     """
     if not isinstance(notes, list):
         raise ValueError("乐谱音符必须是列表")
+    require_valid(notes)
     total = len(notes)
     if isinstance(start_index, bool) or not isinstance(start_index, int):
         raise ValueError("片段起点必须是整数")
@@ -181,6 +182,9 @@ def prepare_score(
     for absolute_index, source in enumerate(notes[start_index:end_index], start=start_index):
         ids = list(source.get("notes") or [])
         unique_ids = list(dict.fromkeys(ids))
+        per_note = source.get("semitones")
+        if per_note is not None:
+            per_note = [per_note[ids.index(nid)] for nid in unique_ids]
         if len(unique_ids) != len(ids):
             degradations.append(
                 TransportDegradation(
@@ -196,14 +200,17 @@ def prepare_score(
             item = {"notes": ids, "dur": duration}
             if source.get("semitone"):
                 item["semitone"] = int(source["semitone"])
+            if per_note is not None:
+                item["semitones"] = per_note
             output.append(item)
             continue
 
         current_semitone = int(source.get("semitone", 0))
         mapped = []
         folded_count = 0
-        for note_id in ids:
-            requested_pitch = note_id_to_midi(note_id) + current_semitone + transpose
+        for note_index, note_id in enumerate(ids):
+            semitone = int(per_note[note_index]) if per_note is not None else current_semitone
+            requested_pitch = note_id_to_midi(note_id) + semitone + transpose
             pitch = requested_pitch
             if not _MIDI_MIN <= pitch <= _MIDI_MAX:
                 if not fold_octaves:
@@ -236,7 +243,7 @@ def prepare_score(
             )
 
         semitones = {item[2] for item in mapped}
-        if len(mapped) > 1 and len(semitones) > 1:
+        if per_note is None and len(mapped) > 1 and len(semitones) > 1:
             winner = max(mapped, key=lambda item: item[0])
             output.append(
                 {
@@ -256,6 +263,8 @@ def prepare_score(
             continue
 
         item = {"notes": [entry[1] for entry in mapped], "dur": duration}
+        if per_note is not None:
+            item["semitones"] = [entry[2] for entry in mapped]
         if next(iter(semitones)):
             item["semitone"] = 1
         output.append(item)

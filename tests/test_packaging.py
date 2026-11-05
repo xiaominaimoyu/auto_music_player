@@ -49,6 +49,10 @@ class TestSpecPackaging(unittest.TestCase):
         self.assertFalse(self.keep(r"poppler\Library\bin\icudt78.dll"))
         self.assertTrue(self.keep(r"PyQt6\Qt6\bin\Qt6Core.dll"))
 
+    def test_keeps_jpeg_background_decoder_but_filters_unused_image_plugins(self):
+        self.assertTrue(self.keep(r"PyQt6\Qt6\plugins\imageformats\qjpeg.dll"))
+        self.assertFalse(self.keep(r"PyQt6\Qt6\plugins\imageformats\qwebp.dll"))
+
 
 if __name__ == "__main__":
     unittest.main()

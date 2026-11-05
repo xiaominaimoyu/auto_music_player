@@ -20,6 +20,7 @@ from core.event_logger import configure_event_logger
 from core.event_player import EventPlayer
 from core.humanize import HumanizeParams
 from core.keyboard_driver import KeyboardDriver
+from core.library_recovery import discover_legacy_libraries
 from core.timing import timing_config
 from core.keymap import KeyMap
 from core.play_logger import PlayLogger
@@ -223,7 +224,16 @@ def main():
             print(f"Store 数据迁移失败，将保留现有数据并继续启动: {migration.error}", file=sys.stderr)
     ensure_omr_components(data_dir)
     player_cfg = cfg.get("player", {})
-    db = ScoreDB(os.path.join(data_dir, app_cfg.get("db_file", "scores.db")))
+    db_file = app_cfg.get("db_file", "scores.db")
+    db_path = os.path.join(data_dir, db_file)
+    relative_data = configured_data_dir if not os.path.isabs(configured_data_dir) else "data"
+    legacy_libraries = discover_legacy_libraries(
+        db_path,
+        [os.path.join(os.path.dirname(config_path), relative_data),
+         os.path.join(stable_app_root(), relative_data)],
+        db_file=db_file,
+    )
+    db = ScoreDB(db_path)
     keymap = KeyMap(cfg["keymap"])
     # 游戏档位:profiles/ 目录优先,缺失时用 config.yaml 的 keymap 合成默认档位
     profile_base = data_dir if getattr(sys, "frozen", False) else "."
@@ -263,7 +273,9 @@ def main():
             jitter_ms=float(humanize_cfg.get("jitter_ms", 12.0)),
             breath_ms=float(humanize_cfg.get("breath_ms", 25.0)),
             jitter_correlation=float(humanize_cfg.get("jitter_correlation", 0.65)),
-            # 保持默认值,不在 config 暴露过多旋钮
+            tempo_arc_ms=float(humanize_cfg.get("tempo_arc_ms", 8.0)),
+            accent_ms=float(humanize_cfg.get("accent_ms", 4.0)),
+            strum_ms=float(humanize_cfg.get("strum_ms", 12.0)),
         )
     # 两条播放路径共用同一个事件日志目录/会话格式，记录页才能同时看到
     # 默认 21 键与三角洲口琴演奏；PlayLogger 继续保留本地统计兼容文件。
@@ -333,6 +345,8 @@ def main():
         event_player=event_player,
         event_log_dir=event_log_dir,
         export_dir=os.path.join(data_dir, "exports"),
+        legacy_libraries=legacy_libraries,
+        data_dir=data_dir,
     )
     win.show()
     sys.exit(app.exec())

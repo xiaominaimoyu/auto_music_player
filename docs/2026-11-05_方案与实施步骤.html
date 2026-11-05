@@ -1,0 +1,509 @@
+<title>旧曲库 · 自动更新 · 乐器试听</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 布局：单栏文档流，1200px 封顶；结论/风险/步骤为可横向滚动的表格区块 */
+:root {
+  --bg: #F6F4EF;
+  --surface: #FFFFFF;
+  --surface-2: #EFEBE1;
+  --ink: #1A1917;
+  --ink-2: #55524B;
+  --ink-3: #8A857B;
+  --line: #DCD6C8;
+  --line-2: #C9C2B1;
+  --brand: #9A6B14;
+  --brand-soft: rgba(154, 107, 20, 0.10);
+  --ok: #1F7A4D;
+  --warn: #A15C00;
+  --crit: #A32B22;
+  --info: #1F5E8A;
+  --mono-bg: #EDE8DC;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E0E14;
+    --surface: #16161E;
+    --surface-2: #1E1E28;
+    --ink: #EDEDF2;
+    --ink-2: #A8A8B6;
+    --ink-3: #74748A;
+    --line: #26262F;
+    --line-2: #34343F;
+    --brand: #D4A24C;
+    --brand-soft: rgba(212, 162, 76, 0.12);
+    --ok: #4ADE80;
+    --warn: #FBBF24;
+    --crit: #F87171;
+    --info: #38BDF8;
+    --mono-bg: #22222C;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E0E14;
+  --surface: #16161E;
+  --surface-2: #1E1E28;
+  --ink: #EDEDF2;
+  --ink-2: #A8A8B6;
+  --ink-3: #74748A;
+  --line: #26262F;
+  --line-2: #34343F;
+  --brand: #D4A24C;
+  --brand-soft: rgba(212, 162, 76, 0.12);
+  --ok: #4ADE80;
+  --warn: #FBBF24;
+  --crit: #F87171;
+  --info: #38BDF8;
+  --mono-bg: #22222C;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Songti SC", "Source Han Serif SC", "Noto Serif SC", Georgia, serif;
+  font-size: 16px;
+  line-height: 1.72;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 48px 80px;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1080px; margin: 0 auto; }
+.sans, h1, h2, h3, .eyebrow, .meta, table, .chip, .tag, nav { font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif; }
+.mono { font-family: Consolas, "Cascadia Code", ui-monospace, monospace; font-size: 0.88em; }
+code {
+  font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+  font-size: 0.86em;
+  background: var(--mono-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.08em 0.36em;
+  white-space: nowrap;
+}
+header.doc {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-bottom: 28px;
+  border-bottom: 2px solid var(--ink);
+  margin-bottom: 40px;
+}
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brand);
+  font-weight: 600;
+}
+h1 {
+  font-size: clamp(28px, 4.4vw, 42px);
+  line-height: 1.24;
+  margin: 0;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+  font-weight: 700;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.meta b { color: var(--ink); font-weight: 600; }
+.lede { font-size: 17px; color: var(--ink-2); max-width: 66ch; margin: 0; }
+
+section { margin-bottom: 56px; }
+h2 {
+  font-size: 22px;
+  margin: 0 0 6px;
+  letter-spacing: -0.005em;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  text-wrap: balance;
+}
+h2 .num {
+  font-size: 13px;
+  color: var(--brand);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-family: Consolas, ui-monospace, monospace;
+}
+h3 { font-size: 16px; margin: 28px 0 8px; font-weight: 600; }
+.sub { font-size: 13px; color: var(--ink-3); margin: 0 0 20px; }
+p { margin: 0 0 14px; max-width: 74ch; }
+ul, ol { margin: 0 0 16px; padding-left: 1.35em; }
+li { margin-bottom: 7px; max-width: 74ch; }
+
+/* 结论卡 */
+.summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 8px; }
+.sum-back { display: none; }
+.sum-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--brand);
+  border-radius: 10px;
+  padding: 18px 18px 16px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sum-card .q { font-size: 13px; color: var(--ink-3); font-family: "Microsoft YaHei", system-ui, sans-serif; }
+.sum-card .a { font-size: 15.5px; font-weight: 600; line-height: 1.5; font-family: "Microsoft YaHei", system-ui, sans-serif; }
+.pill {
+  align-self: flex-start;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-family: "Microsoft YaHei", system-ui, sans-serif;
+  letter-spacing: 0.02em;
+}
+.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.pill.crit { color: var(--crit); background: color-mix(in srgb, var(--crit) 10%, transparent); }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 560px; }
+th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; background: var(--surface-2); white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.callout {
+  border-left: 3px solid var(--brand);
+  background: var(--brand-soft);
+  padding: 14px 18px;
+  border-radius: 0 8px 8px 0;
+  margin: 18px 0;
+  font-size: 15px;
+}
+.callout strong { font-family: "Microsoft YaHei", system-ui, sans-serif; }
+.callout.crit { border-left-color: var(--crit); background: color-mix(in srgb, var(--crit) 8%, transparent); }
+
+/* 步骤 */
+.steps { display: flex; flex-direction: column; gap: 0; border-left: 2px solid var(--line-2); margin-left: 6px; padding-left: 0; }
+.step { position: relative; padding: 0 0 26px 26px; }
+.step:last-child { padding-bottom: 0; }
+.step::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 7px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--brand);
+}
+.step.done::before { background: var(--brand); }
+.step-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.step-head .id { font-family: Consolas, ui-monospace, monospace; font-size: 12px; font-weight: 700; color: var(--brand); letter-spacing: 0.04em; }
+.step-head .title { font-family: "Microsoft YaHei", system-ui, sans-serif; font-weight: 600; font-size: 16px; }
+.step p, .step ul { font-size: 15px; margin-bottom: 8px; }
+.step .accept { font-size: 13.5px; color: var(--ink-2); }
+.step .accept b { color: var(--ink); font-family: "Microsoft YaHei", system-ui, sans-serif; font-weight: 600; }
+
+.file-list { display: flex; flex-direction: column; gap: 10px; }
+.file {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 2fr);
+  gap: 4px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.file .path { font-family: Consolas, ui-monospace, monospace; font-size: 13.5px; font-weight: 600; word-break: break-all; }
+.file .lines { font-family: Consolas, ui-monospace, monospace; font-size: 12px; color: var(--ink-3); margin-top: 3px; }
+.file .what { font-size: 14.5px; color: var(--ink-2); min-width: 0; }
+.file .what em { font-style: normal; color: var(--ink); font-weight: 600; }
+.tag { font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line-2); color: var(--ink-2); margin-left: 6px; font-weight: 500; vertical-align: 1px; }
+.tag.done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.tag.part { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+
+.decisions ol { counter-reset: d; list-style: none; padding: 0; }
+.decisions li {
+  counter-increment: d;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px 14px 52px;
+  position: relative;
+  margin-bottom: 10px;
+  font-size: 15px;
+  max-width: none;
+}
+.decisions li::before {
+  content: counter(d);
+  position: absolute;
+  left: 16px;
+  top: 13px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-family: Consolas, ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 13px;
+  display: grid;
+  place-items: center;
+}
+
+footer.doc {
+  margin-top: 64px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--ink-3);
+  font-family: "Microsoft YaHei", system-ui, sans-serif;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+}
+
+@media (max-width: 760px) {
+  body { padding-block: 28px 56px; font-size: 15.5px; }
+  .summary { grid-template-columns: 1fr; }
+  .file { grid-template-columns: 1fr; }
+  header.doc { margin-bottom: 32px; padding-bottom: 22px; }
+  section { margin-bottom: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="doc">
+    <div class="eyebrow">AutoMusic Player · 技术方案</div>
+    <h1>旧曲库安全 · 程序内自动更新 · 乐器试听</h1>
+    <p class="lede">P0、迁移备份提示与演练已完成本地实施。源码和签名清单验证通过，线上清单同步及后续版本发布按发布流程推进。</p>
+    <div class="meta">
+      <span>基线 <b>v1.5.1 · sequence 151</b></span>
+      <span>平台 <b>Windows 便携 / Store 双通道</b></span>
+      <span>日期 <b>2026-11-05</b></span>
+    </div>
+  </header>
+
+  <section>
+    <div class="summary">
+      <div class="sum-card">
+        <div class="q">问题一</div>
+        <div class="a">更新后旧乐谱会不会丢</div>
+        <span class="pill ok">只换 EXE 不会丢</span>
+        <p class="sans" style="font-size:13.5px;color:var(--ink-2);margin:0">保留原配置和数据目录。启动发现旧库后确认导入，迁移备份路径可见，未来格式会被拒绝。</p>
+      </div>
+      <div class="sum-card">
+        <div class="q">问题二</div>
+        <div class="a">程序内自动下载更新</div>
+        <span class="pill warn">本地已重签 · 待发布同步</span>
+        <p class="sans" style="font-size:13.5px;color:var(--ink-2);margin:0">本地清单为 1.5.1 / 151，两个发行 EXE 大小和哈希均已核对。新增源码功能随后续版本发布。</p>
+      </div>
+      <div class="sum-card">
+        <div class="q">问题三</div>
+        <div class="a">竖琴 / 古筝 / 口琴试听</div>
+        <span class="pill warn">本次做到一半</span>
+        <p class="sans" style="font-size:13.5px;color:var(--ink-2);margin:0">演奏页已接入音色与模拟模式，缺单测与档位联动刷新。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">01</span>旧曲库是否保留</h2>
+    <p class="sub">已核实代码，非推测。结论：曲库跟着 data/ 目录走，替换 EXE 不影响。</p>
+
+    <h3>现状机制</h3>
+    <p>数据目录由 <code>main.py:180</code> 的 <code>_resolve_data_dir</code> 决定：便携版用 exe 旁 <code>data/</code>，安装版落到 <code>%LOCALAPPDATA%\AutoMusicPlayer\data</code>，MSIX 走 <code>LocalState</code> 并先做一次只复制不删除的合并。曲库本体在 <code>core/database.py</code>：<code>SCHEMA_VERSION = 2</code>，升级前先用 SQLite backup API 生成 <code>scores.db.pre-v2.&lt;时间戳&gt;.bak</code>；表结构全部 <code>CREATE TABLE IF NOT EXISTS</code>，只增不改。来源附件按 SHA-256 存在 <code>data/sources/</code>。</p>
+
+    <h3>真实风险</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>编号</th><th>风险</th><th>触发条件</th><th>后果</th></tr></thead>
+        <tbody>
+          <tr><td class="n">R1</td><td>整包覆盖解压</td><td>发布包内含 config.yaml 与空 data/</td><td>旧 scores.db 被冲掉或指向空目录</td></tr>
+          <tr><td class="n">R2</td><td>data_mode 变更</td><td>便携版与安装版互切</td><td>库还在但看不见，表现为「乐谱全没了」</td></tr>
+          <tr><td class="n">R3</td><td>schema 版本兼容</td><td>清单要求更高数据库格式或客户端过旧</td><td>下载前拒绝并提示备份后手动升级，当前程序也拒绝打开未来格式</td></tr>
+          <tr><td class="n">R4</td><td>迁移备份位置</td><td>首次 schema 升级</td><td>状态栏和曲库页显示备份路径</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>已有资产：曲库找回</h3>
+    <p><code>core/library_recovery.py</code> 已经是完整实现：只读打开旧库、校验 user_version、导入前备份当前库、按内容指纹去重可重试、附件必须落在旧库 <code>sources/</code> 内且 SHA-256 一致、失败整体回滚。界面入口是乐谱库页的「找回旧曲库」按钮。</p>
+  </section>
+
+  <section>
+    <h2><span class="num">02</span>自动更新的现状与缺口</h2>
+    <p class="sub">验签下载链路完整，问题在发布侧一致性。</p>
+
+    <p><code>core/update_checker.py</code> 已具备：Ed25519 验签（canonical JSON）、双镜像取最高有效序列、拒绝回滚、签发/过期时间校验、强制 HTTPS、清单 1 MB 上限、更新包 2 GB 上限、边下边算 SHA-256、临时文件校验通过后才原子改名且绝不覆盖同名文件、可取消并上报进度。</p>
+
+    <div class="callout crit">
+      <strong>本地完成，线上待同步。</strong>程序和本地清单均为 1.5.1 / sequence 151。重签后模拟 1.5.0 客户端可发现新版，1.5.1 判断为最新。GitHub/Gitee 正式镜像清单需要按文件清单确认流程发布。
+    </div>
+
+    <p>自替换没有实现，是刻意为之：<code>docs/发布签名与更新器门禁.md</code> 要求正式 Authenticode 证书与回滚测试证据齐备后才进入第二阶段。当前本机有 signtool，但没有可正式发布的证书，因此保持「下载并提示手动替换」。</p>
+  </section>
+
+  <section>
+    <h2><span class="num">03</span>实施步骤</h2>
+    <p class="sub">按优先级排列。实心圆点项已实现并入库。</p>
+
+    <div class="steps">
+      <div class="step done">
+        <div class="step-head"><span class="id">S1–S3</span><span class="title">演奏页音色选择与模拟游戏演奏</span></div>
+        <p>新增「试听音色」（大钢琴 / 竖琴 / 口琴 / Koto 近似筝音）与「试听方式」（校对原谱 / 模拟游戏演奏）。模拟模式复用真实演奏的编译链路：21 键档位走 <code>direct_preview_events</code>（含扫弦、抖动、gap），三角洲档位走 <code>build_event_plan</code> + <code>compiled_preview_events</code>（含八度/半音修饰、和弦降级计数），全程只发声不发送输入。已随提交 2 入库。</p>
+        <p class="accept"><b>已完成。</b></p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">S1</span><span class="title">切换档位时刷新默认音色</span></div>
+        <p><code>_on_profile_change</code> 已调用 <code>_apply_preview_defaults()</code>，切到三角洲档位后音色自动变为口琴。</p>
+        <p class="accept"><b>已完成。</b></p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">S2</span><span class="title">模拟试听单测</span></div>
+        <p>新增 <code>tests/test_game_preview.py</code>，8 条用例覆盖两条路径、修饰键、直达键、降级与跳过逻辑。</p>
+        <p class="accept"><b>已完成：8 passed。</b></p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">S3</span><span class="title">全量回归</span></div>
+        <p><code>python -m pytest -q</code> 与 <code>python -m unittest discover -s tests</code> 串行各跑一遍（日志测试使用固定临时目录，不能并行）。</p>
+        <p class="accept"><b>已完成，续作全量结果为 609 passed / 2 skipped；515 tests OK / 2 skipped。</b></p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">P0-1</span><span class="title">启动时探测旧库并询问</span></div>
+        <p>目标 <code>scores.db</code> 不存在、但另一侧存在旧库时，弹一次「发现旧曲库」；用户确认后复用 <code>recover_library()</code>。不自动改配置、不自动迁移、原库只读。</p>
+        <p class="accept"><b>已验证。</b>已知另一侧旧库可被发现，拒绝后旧库字节相同，确认后界面刷新出旧谱。</p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">P0-2</span><span class="title">用 db_schema_version 做发布门禁</span></div>
+        <p>在 <code>download_update()</code> 联网前判断 <code>manifest.db_schema_version &gt; ScoreDB.SCHEMA_VERSION</code> 即拒绝，提示手动更新；<code>min_supported</code> 不满足时给出警告。</p>
+        <p class="accept"><b>已验证。</b>签名清单要求 schema 99 或更高最低客户端版本时，下载联网前被拒，保存目录为空。</p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">P0-3</span><span class="title">版本三处同步，缺一拒发</span></div>
+        <p><code>version.txt</code> → <code>core/version.py</code> → <code>updates/stable.json</code> 三者必须一致，由发布脚本比对，不一致就终止打包；清单随后用 <code>tools/update_manifest.py sign</code> 重签。</p>
+        <p class="accept"><b>已验证。</b>spec 在 Analysis 前执行版本检查，单独更改 version.txt 或清单序列号都会失败。最终文件的哈希在构建后由 release_check 校验。</p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">P1</span><span class="title">迁移备份可见化</span></div>
+        <p>首次发生 schema 迁移，状态栏和曲库页同时显示备份路径。</p>
+        <p class="accept"><b>已验证。</b>v1 库升级后提示可见，备份文件可打开并保留 v1 schema。</p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">P0-4 / P2</span><span class="title">本地清单重签与迁移演练</span></div>
+        <p><code>update_manifest.py prepare</code> 从最终 EXE 生成并签署清单，错误签名钥会被拒。<code>rehearse_library_migration.py</code> 在临时副本中验证迁移、备份和重复恢复。</p>
+        <p class="accept"><b>已验证。</b>两个发行 EXE 均为 40,158,959 字节，SHA-256 为 <span class="mono">fb6b7d71d91f5c454628a41958994c72a4a4df0c80429eb731c79fb32a19aaf9</span>。</p>
+      </div>
+      <div class="step">
+        <div class="step-head"><span class="id">P2</span><span class="title">自替换第二阶段（需拍板）</span></div>
+        <p>退出后由临时 helper 替换 EXE：备份 data/ 清单 → 原子替换 → 失败回滚 → 重启。前置条件为正式签名证书、干净机验收、自动化回滚测试。不做则用户仍需手动替换文件。</p>
+      </div>
+      <div class="step">
+        <div class="step-head"><span class="id">P2</span><span class="title">真实采样音色（可选）</span></div>
+        <p>打包 SF2 子集（竖琴 / 口琴 / 筝，约 5–15 MB）走 FluidSynth，或检测本机 MuseScore 后启用、否则静默回落 GM。四个 GM 音色差异明显，但不是游戏内真实音色。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">04</span>本次改动记录</h2>
+    <p class="sub">只记录本会话改动的文件。工作区另有一批 09-27 起、上一会话留下的改动，其 33 个相关测试已通过，不在此表。</p>
+
+    <div class="file-list">
+      <div class="file">
+        <div>
+          <div class="path">core/profile.py<span class="tag done">完成</span></div>
+          <div class="lines">:77 · :142</div>
+        </div>
+        <div class="what"><em>GameProfile</em> 新增 <code>preview_instrument</code> 字段（空字符串表示跟随界面首选），<em>_from_dict</em> 解析该键。不写该键的旧档位文件行为不变。</div>
+      </div>
+      <div class="file">
+        <div>
+          <div class="path">profiles/default.yaml<span class="tag done">完成</span></div>
+          <div class="lines">:44</div>
+        </div>
+        <div class="what">新增 <code>preview_instrument: 竖琴</code>。鸣潮 / 原神的演奏乐器偏竖琴类，试听默认用它。</div>
+      </div>
+      <div class="file">
+        <div>
+          <div class="path">profiles/delta_force_harmonica.yaml<span class="tag done">完成</span></div>
+          <div class="lines">:46</div>
+        </div>
+        <div class="what">新增 <code>preview_instrument: 口琴</code>。该档位本身就是口琴玩法，试听音色与游戏内一致。</div>
+      </div>
+      <div class="file">
+        <div>
+          <div class="path">core/game_preview.py<span class="tag done">完成</span></div>
+          <div class="lines">:42 附近</div>
+        </div>
+        <div class="what">上一会话新增的未跟踪文件，本次在其上修改：音键在直达表与音位表都查不到时不再抛 <code>KeyError</code>，而是与真实演奏一致地不发声；新增 <em>compiled_preview_duration()</em> 计算编译时间轴总时长（事件本身不带尾部时长）。</div>
+      </div>
+      <div class="file">
+        <div>
+          <div class="path">gui/player_tab.py<span class="tag done">完成</span></div>
+          <div class="lines">:29–36 · :248 · :441–465<br>:1098–1158 · :1160–1235 · :1375</div>
+        </div>
+        <div class="what">
+          引入 <code>core.game_preview</code> 与 <code>PREVIEW_INSTRUMENTS</code>；演奏控制卡片新增「试听音色」「试听方式」两个下拉；播放中禁用两者（换一个却听到另一个才是 bug）；
+          新增 <code>_apply_preview_defaults()</code>（按档位取默认音色）、<code>_preview_timing()</code>（MIDI 导入不加 gap，改用克制的真人化幅度，与 <code>_play</code> 一致）、
+          <code>_game_preview_timeline()</code>（双路径取时间轴并返回降级数）；<code>_toggle_preview()</code> 分流为「校对原谱」与「模拟游戏演奏」；
+          切换档位时刷新默认音色；<code>scenario_combo</code> 改为带默认值取值；工具提示与状态文案同步更新。
+        </div>
+      </div>
+      <div class="file">
+        <div>
+          <div class="path">tests/test_game_preview.py<span class="tag done">新增</span></div>
+          <div class="lines">全文 · 8 条用例</div>
+        </div>
+        <div class="what">修饰键升降八度、物理直达键、未知音键不抛错、提交键不发声、时长回落、21 键槽位与扫弦顺序、无键音符跳过、档位音色名与音色表一致。</div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:22px">
+      <strong>续作已完成。</strong>旧库启动探测、版本和格式兼容性检查、迁移备份提示、演练脚本及本地清单重签已实现。试听还补齐了逐音升号保留、原谱短音校对、旧档位默认音色回退及播放中选择锁定。
+    </div>
+
+    <h3>已验证</h3>
+    <ul>
+      <li><code>py_compile</code> 三个改动文件通过。</li>
+      <li><code>pytest tests/test_game_preview.py</code> → <b>8 passed</b>。</li>
+      <li>续作全量 <code>pytest -q</code> 为 <b>609 passed, 2 skipped, 28 subtests</b>，<code>unittest discover -s tests</code> 为 <b>515 tests OK, 2 skipped</b>。既有日志和配置测试仍有 ResourceWarning。</li>
+      <li>旧行为未被破坏：「试听方式」默认选中「校对原谱」，<code>PreviewPlayer.play()</code> 的调用形态不变。</li>
+    </ul>
+
+    <h3>凌晨会话记录的提交</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>提交</th><th>内容</th><th>文件数</th></tr></thead>
+        <tbody>
+          <tr><td class="n">1</td><td>演奏器与试听共用同一套音符槽位调度</td><td class="n">2</td></tr>
+          <tr><td class="n">2</td><td>旧曲库找回、验签下载、多音色与模拟游戏试听</td><td class="n">17</td></tr>
+          <tr><td class="n">3</td><td>方案文档与架构/需求/规则说明</td><td class="n">见文档</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sans" style="font-size:13.5px;color:var(--ink-3);margin-top:10px">17 个行尾差异文件（<code>core.autocrlf=true</code> 造成的 CRLF/LF 假改动）未提交，内容与 HEAD 一致。</p>
+  </section>
+
+  <section class="decisions">
+    <h2><span class="num">05</span>发布与后续验收</h2>
+    <ol>
+      <li>确认文件清单后按 Git 发布流程同步线上双镜像清单。</li>
+      <li>本轮源码新增功能需要后续版本构建和发布，本地 v1.5.1 清单指向已发布的 v1.5.1 EXE。</li>
+      <li>真实采样音色为可选项，当前四档系统 GM 可用，筝类为 Koto 近似；待实机听感对照。</li>
+      <li>退出后自动替换按正式签名、干净机和回滚门禁推进。</li>
+    </ol>
+  </section>
+
+  <footer class="doc">
+    <span>仓库内对应文档：docs/2026-11-05_旧曲库-自动更新-乐器试听_方案与实施步骤.md</span>
+    <span>代码基线 v1.5.1</span>
+  </footer>
+</div>

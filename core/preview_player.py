@@ -1,8 +1,4 @@
-"""本地钢琴试听器。
-
-试听通过 Windows General MIDI 播放标准 Acoustic Grand Piano 音色,不会调用
-KeyboardDriver / EventPlayer,因此不会向游戏发送键盘或鼠标输入。
-"""
+"""使用 Windows General MIDI 试听原谱或游戏编排，仅向音源发送消息。"""
 
 import ctypes
 import io
@@ -10,16 +6,24 @@ import math
 import struct
 import sys
 import threading
+import time
 import wave
 from ctypes import wintypes
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.score_io import note_id_to_midi
+from core.timing import wait_until
 
 
-PREVIEW_GAP_MS = 20
+PREVIEW_GAP_MS = 0
 MIDI_ACOUSTIC_GRAND_PIANO = 0
+PREVIEW_INSTRUMENTS = {
+    "大钢琴": MIDI_ACOUSTIC_GRAND_PIANO,
+    "竖琴": 46,
+    "口琴": 22,
+    "筝类近似音色（Koto）": 107,
+}
 MIDI_PREVIEW_VELOCITY = 92
 _SAMPLE_RATE = 22050
 _MIDI_MAPPER = 0xFFFFFFFF
@@ -50,16 +54,18 @@ def note_frequency(note_id: str, semitone: int = 0) -> float:
 
 def note_frequencies(note: dict) -> list[float]:
     """返回一个谱面事件需要同时发出的频率;空列表表示休止符。"""
-    note_ids = note.get("notes") or []
-    semitone = note.get("semitone", 0)
-    return [note_frequency(note_id, semitone) for note_id in note_ids]
+    return [440.0 * 2.0 ** ((midi - 69) / 12.0) for midi in note_midi_numbers(note)]
 
 
 def note_midi_numbers(note: dict) -> list[int]:
     """返回一个谱面事件需要同时发出的 MIDI 音高;空列表表示休止符。"""
     note_ids = note.get("notes") or []
-    semitone = note.get("semitone", 0)
-    return [note_midi_number(note_id, semitone) for note_id in note_ids]
+    offsets = note.get("semitones")
+    if offsets is None:
+        offsets = [note.get("semitone", 0)] * len(note_ids)
+    elif not isinstance(offsets, list) or len(offsets) != len(note_ids):
+        raise ValueError("和弦的 semitones 必须与 notes 等长")
+    return [note_midi_number(note_id, offset) for note_id, offset in zip(note_ids, offsets)]
 
 
 def preview_duration_ms(note: dict, bpm: float) -> int:
@@ -115,7 +121,7 @@ class _WindowsMidiOutput:
             ctypes.byref(self._handle), _MIDI_MAPPER, 0, 0, 0
         )
         if result != 0:
-            raise RuntimeError(f"无法打开 Windows MIDI 钢琴音源（错误码 {result}）")
+            raise RuntimeError(f"无法打开 Windows MIDI 音源（错误码 {result}）")
         self._closed = False
         try:
             self._send(_midi_message(0xC0, int(program)))
@@ -149,7 +155,7 @@ class _WindowsMidiOutput:
     def _send(self, message: int):
         with self._lock:
             if self._closed:
-                raise RuntimeError("Windows MIDI 钢琴音源已经关闭")
+                raise RuntimeError("Windows MIDI 音源已经关闭")
             result = self._midi_out_short_msg(self._handle, message)
             if result != 0:
                 raise RuntimeError(f"Windows MIDI 音符发送失败（错误码 {result}）")
@@ -194,24 +200,59 @@ class PreviewPlayer(QObject):
     def is_playing(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def play(self, notes, bpm=100, gap_ms=PREVIEW_GAP_MS, score_name="") -> bool:
-        """开始试听;返回 False 表示已有试听正在播放。"""
-        notes = [dict(note) for note in notes]
-        if not notes:
-            raise ValueError("没有可试听的音符")
-        bpm = max(1.0, float(bpm))
+    def play(self, notes, bpm=100, gap_ms=PREVIEW_GAP_MS, score_name="", *,
+             program=MIDI_ACOUSTIC_GRAND_PIANO) -> bool:
+        """试听原谱。默认按谱面起音，显式 gap_ms 保留旧接口的额外间隔。"""
+        beat_ms = 60000.0 / max(1.0, float(bpm))
         gap_ms = max(0.0, float(gap_ms))
+        timeline = []
+        start_ms = 0.0
+        count = 0
+        for count, note in enumerate(notes, start=1):
+            end_ms = start_ms + max(1.0, float(note["dur"]) * beat_ms)
+            pitches = note_midi_numbers(note)
+            timeline.extend((start_ms, pitch, True, 0) for pitch in pitches)
+            timeline.extend((end_ms, pitch, False, 0) for pitch in pitches)
+            timeline.append((end_ms, None, False, count))
+            start_ms = end_ms + gap_ms
+        if not count:
+            raise ValueError("没有可试听的音符")
+        return self._start(timeline, count, program)
+
+    def play_events(self, events, *, program=MIDI_ACOUSTIC_GRAND_PIANO, duration_ms=0) -> bool:
+        """播放 (绝对毫秒, MIDI 音高, 是否起音) 序列，duration_ms 包含尾部休止。"""
+        duration_ms = float(duration_ms)
+        if not math.isfinite(duration_ms) or duration_ms < 0:
+            raise ValueError("试听时长必须为非负有限数")
+        ordered = []
+        for at_ms, pitch, is_down in events:
+            at_ms = float(at_ms)
+            if not math.isfinite(at_ms) or at_ms < 0:
+                raise ValueError("试听事件时间必须为非负有限数")
+            if not isinstance(pitch, int) or not 0 <= pitch <= 127:
+                raise ValueError("MIDI 音高必须是 0 至 127 的整数")
+            ordered.append((at_ms, pitch, is_down))
+        ordered.sort(key=lambda event: event[0])
+        timeline = [(at, pitch, down, index) for index, (at, pitch, down)
+                    in enumerate(ordered, start=1)]
+        if not timeline or timeline[-1][0] < duration_ms:
+            timeline.append((duration_ms, None, False, 0))
+        return self._start(timeline, len(ordered), program)
+
+    def _start(self, timeline, count, program):
+        if not isinstance(program, int) or not 0 <= program <= 127:
+            raise ValueError("MIDI 音色必须是 0 至 127 的整数")
         with self._lock:
             if self.is_playing:
                 return False
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run,
-                args=(notes, bpm, gap_ms, str(score_name)),
+                args=(timeline, count, program),
                 daemon=True,
             )
             self._thread.start()
-        self.started.emit(len(notes))
+        self.started.emit(count)
         return True
 
     def stop(self):
@@ -228,36 +269,31 @@ class PreviewPlayer(QObject):
         if thread is not None and thread.is_alive():
             thread.join(join_timeout)
 
-    def _create_midi_output(self):
-        return _WindowsMidiOutput(MIDI_ACOUSTIC_GRAND_PIANO)
+    def _create_midi_output(self, program):
+        return _WindowsMidiOutput(program)
 
-    def _run(self, notes, bpm, gap_ms, _score_name):
+    def _run(self, timeline, count, program):
         normal = False
         midi_output = None
         try:
             if sys.platform != "win32":
-                raise RuntimeError("钢琴试听目前仅支持 Windows 系统 MIDI 音源")
+                raise RuntimeError("试听目前仅支持 Windows 系统 MIDI 音源")
             if self._stop_event.is_set():
                 return
-            midi_output = self._create_midi_output()
+            midi_output = self._create_midi_output(program)
             with self._lock:
                 self._midi_output = midi_output
-            for index, note in enumerate(notes):
-                if self._stop_event.is_set():
+            origin = time.perf_counter()
+            for at_ms, pitch, is_down, progress in timeline:
+                if wait_until(self._stop_event, origin + at_ms / 1000.0):
                     break
-                midi_notes = note_midi_numbers(note)
-                duration_ms = preview_duration_ms(note, bpm)
-                for midi_note in midi_notes:
-                    midi_output.note_on(midi_note)
-                interrupted = self._stop_event.wait(duration_ms / 1000.0)
-                for midi_note in midi_notes:
-                    midi_output.note_off(midi_note)
-                if interrupted:
-                    break
-                self.progress.emit(index + 1, len(notes))
-                if index + 1 < len(notes) and gap_ms > 0:
-                    if self._stop_event.wait(gap_ms / 1000.0):
-                        break
+                if pitch is not None:
+                    if is_down:
+                        midi_output.note_on(pitch)
+                    else:
+                        midi_output.note_off(pitch)
+                if progress:
+                    self.progress.emit(progress, count)
             normal = not self._stop_event.is_set()
         except Exception as exc:
             self.error_occurred.emit(str(exc))

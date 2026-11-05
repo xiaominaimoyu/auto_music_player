@@ -114,12 +114,24 @@ def from_storage(items: Sequence[dict], semitones: Iterable[int] | None = None) 
             semi = semitones[i]
         else:
             semi = 0
+        per_note = item.get("semitones")
+        if per_note is not None and not isinstance(per_note, list):
+            raise ValueError(f"音符 {i + 1} 的 semitones 必须是列表")
+        if per_note is not None and len(per_note) != len(ids):
+            raise ValueError(
+                f"音符 {i + 1} 的 semitones 长度({len(per_note)})与音数({len(ids)})不一致"
+            )
         if not ids:
             out.append(IRRest(dur))
         elif len(ids) == 1:
-            out.append(_note_from_id(ids[0], dur, semi))
+            note_semi = int(per_note[0]) if per_note is not None else semi
+            out.append(_note_from_id(ids[0], dur, note_semi))
         else:
-            out.append(IRChord(tuple(_note_from_id(n, dur, semi) for n in ids), dur))
+            chord_notes = []
+            for note_index, note_id in enumerate(ids):
+                note_semi = int(per_note[note_index]) if per_note is not None else semi
+                chord_notes.append(_note_from_id(note_id, dur, note_semi))
+            out.append(IRChord(tuple(chord_notes), dur))
     return out
 
 
