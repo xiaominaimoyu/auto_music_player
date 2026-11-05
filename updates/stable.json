@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "version": "1.5.1",
-  "sequence": 151,
+  "version": "1.5.2",
+  "sequence": 152,
   "min_supported": "1.4.2",
   "urls": [
-    "https://gitee.com/muming04yue/auto_music_player/releases/download/v1.5.1/AutoMusicPlayer.exe",
-    "https://github.com/xiaominaimoyu/auto_music_player/releases/download/v1.5.1/AutoMusicPlayer.exe"
+    "https://gitee.com/muming04yue/auto_music_player/releases/download/v1.5.2/AutoMusicPlayer.exe",
+    "https://github.com/xiaominaimoyu/auto_music_player/releases/download/v1.5.2/AutoMusicPlayer.exe"
   ],
-  "size": 40158959,
-  "sha256": "fb6b7d71d91f5c454628a41958994c72a4a4df0c80429eb731c79fb32a19aaf9",
-  "issued_at": "2026-11-05T00:20:41Z",
-  "expires_at": "2027-11-05T00:20:41Z",
+  "size": 40439134,
+  "sha256": "8559049a39434e068ed591a5b47cef3e530051300456bab28dcd1d72ee834a58",
+  "issued_at": "2026-11-05T02:23:41Z",
+  "expires_at": "2027-11-05T02:23:41Z",
   "db_schema_version": 2,
-  "release_notes": "桌面 v1.5.1 已发布，详细变更见发行说明。更新程序前请退出应用并备份曲库，替换时保留配置与数据目录。",
-  "signature": "dvTsqjLIU/JMQWAFeudW1YTtRaTOOEofcgc4lidBh63QFlqs/nXZWqcJoBbLn68t2rD/p794M//1ihuBb4RjDw=="
+  "release_notes": "# Auto Music Player v1.5.2\n\nWindows x64 便携版，无需安装 Python。\n\n## 更新内容\n\n- **旧曲库升级保留**：沿用已有数据目录，升级曲库前自动备份；增加旧曲库启动探测和手动恢复入口，备份位置可在界面查看。遇到更高版本的曲库格式时拒绝直接打开，保护原有数据。\n- **自动更新**：定期检查 GitHub/Gitee 签名更新清单，确认后后台下载并显示进度，支持取消；下载完成后校验签名、文件大小及 SHA-256，并检查版本和数据库升级兼容性。替换程序仍需退出后手动完成。\n- **乐器试听**：上传校对页和演奏页支持系统扬声器试听，可选择竖琴、口琴及近似筝音色；区分原谱校对与游戏档位模拟，保留逐音半音、短音和档位降级提示。\n- **页面背景自定义**：侧栏新增“外观设置”，支持默认、纯色、四种渐变以及本地 PNG/JPEG 图片；可调图片布局、背景压暗和卡片不透明度。支持实时预览、取消还原、保存及恢复默认，四个页面共用背景，重启后保留设置。\n\n## 升级与数据保留\n\n1. 退出正在运行的旧版本，备份当前曲库、配置和自定义档位。\n2. 将新的 `AutoMusicPlayer.exe` 放回原程序位置，保留已有 `data/`、`config.yaml`、`profiles/` 及 `portable.flag`（如有）。不要使用空白数据目录覆盖旧目录。\n3. 新安装版默认使用当前用户的程序数据目录；已有便携数据的用户继续使用原目录。发现旧曲库时先核对来源，再按提示恢复。\n4. 背景设置和图片副本保存在数据目录的 `appearance.json`、`backgrounds/`，备份或迁移时一并保留。图片损坏或丢失时自动回退默认背景。\n\n## 发布文件与限制\n\n- 下载 `AutoMusicPlayer.exe`，可按同页 `SHA256SUMS.txt` 校验文件；更新客户端另外校验 Ed25519 签名清单。\n- 当前便携版未使用可信 Authenticode 证书，Windows 可能显示未知发布者提示。更新清单验签与 Windows EXE 签名是不同机制。\n- 乐器试听使用系统 MIDI 音色，近似筝音色及游戏模拟不能视为游戏原声采样。\n- 自动下载后的静默替换尚未启用；OMR 组件继续使用既有的按需资源，识别结果仍需人工校对。\n",
+  "signature": "DFirWa+5xaRKLvrsU19FZrZl+N4gaqXCT8F3O0UqQ9WX0sRt/SVuPrptjan9ymTDWMl3Ke0AHgLDQmy/3whlCg=="
 }

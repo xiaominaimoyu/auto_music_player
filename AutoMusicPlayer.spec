@@ -14,6 +14,30 @@ from tools.release_check import check_versions
 
 check_versions(SPECPATH)
 
+from core.version import APP_VERSION
+from PyInstaller.utils.win32 import versioninfo
+
+windows_version = tuple(int(part) for part in APP_VERSION.split(".")) + (0,)
+windows_version_info = versioninfo.VSVersionInfo(
+    ffi=versioninfo.FixedFileInfo(
+        filevers=windows_version, prodvers=windows_version,
+        mask=0x3F, flags=0, OS=0x40004, fileType=1, subtype=0, date=(0, 0),
+    ),
+    kids=[
+        versioninfo.StringFileInfo([
+            versioninfo.StringTable("080404B0", [
+                versioninfo.StringStruct("FileDescription", "Auto Music Player"),
+                versioninfo.StringStruct("FileVersion", APP_VERSION),
+                versioninfo.StringStruct("InternalName", "AutoMusicPlayer"),
+                versioninfo.StringStruct("OriginalFilename", "AutoMusicPlayer.exe"),
+                versioninfo.StringStruct("ProductName", "Auto Music Player"),
+                versioninfo.StringStruct("ProductVersion", APP_VERSION),
+            ]),
+        ]),
+        versioninfo.VarFileInfo([versioninfo.VarStruct("Translation", [0x0804, 1200])]),
+    ],
+)
+
 EXCLUDES = [
     # PyQt6 未使用的子模块
     "PyQt6.QtNetwork", "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtQuickWidgets",
@@ -141,6 +165,7 @@ exe = EXE(
     name="AutoMusicPlayer",
     icon="app.ico",
     manifest=WINDOWS_MANIFEST,
+    version=windows_version_info,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
