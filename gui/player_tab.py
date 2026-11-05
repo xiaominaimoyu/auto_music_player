@@ -1107,6 +1107,10 @@ class PlayerTab(QWidget):
         if not hasattr(self, "preview_instrument_combo"):
             return
         name = str(getattr(self._profile, "preview_instrument", "") or "")
+        if not name:
+            name = {"default": "竖琴", "delta_force_harmonica": "口琴"}.get(
+                getattr(self._profile, "id", ""), ""
+            )
         index = self.preview_instrument_combo.findText(name) if name else -1
         if index >= 0:
             self.preview_instrument_combo.setCurrentIndex(index)
@@ -1157,7 +1161,9 @@ class PlayerTab(QWidget):
         )
         if not events:
             raise ValueError("当前键位映射下这段乐谱没有可发声的音符")
-        return events, duration, ""
+        dropped = sum(any(note.get("semitones", [note.get("semitone", 0)])) for note in notes)
+        detail = f" · 已降级 {dropped} 处升半音为自然音" if dropped else ""
+        return events, duration, detail
 
     def _toggle_preview(self):
         if self._preview_active:
@@ -1171,28 +1177,36 @@ class PlayerTab(QWidget):
         if not score or not score["notes"]:
             AppDialog.show_warning(self, "提示", "该乐谱没有音符数据")
             return
+        simulated = self.preview_mode_combo.currentData() == "game"
         try:
-            prepared = self._prepare_current_score(score)
+            if simulated:
+                prepared = self._prepare_current_score(score)
+                preview_notes = list(prepared.notes) if prepared else []
+            else:
+                start, end = self._segment_bounds()
+                preview_notes = score["notes"][start:end]
         except ValueError as exc:
             AppDialog.show_error(self, "试听失败", str(exc))
             return
-        if prepared is None or not prepared.notes:
+        if not preview_notes:
             AppDialog.show_warning(self, "提示", "当前播放片段为空")
             return
         program = self.preview_instrument_combo.currentData()
         instrument = self.preview_instrument_combo.currentText()
-        simulated = self.preview_mode_combo.currentData() == "game"
         if simulated:
             try:
                 events, duration_ms, note = self._game_preview_timeline(
-                    list(prepared.notes), score
+                    preview_notes, score
                 )
+                if prepared.degradations:
+                    note += f" · 播放适配 {len(prepared.degradations)} 处"
             except (TypeError, ValueError, RuntimeError) as e:
                 AppDialog.show_error(self, "试听失败", str(e))
                 self.preview_status.setText(f"试听失败: {e}")
                 return
         self._preview_error = False
         self._preview_active = True
+        self._update_preview_button()
         self.preview_btn.setText("停止试听")
         self.play_btn.setEnabled(False)
         if simulated:
@@ -1212,7 +1226,7 @@ class PlayerTab(QWidget):
                 )
             else:
                 started = self._preview_player.play(
-                    prepared.notes,
+                    preview_notes,
                     bpm=self.bpm_spin.value(),
                     score_name=score["name"],
                     program=program,
@@ -1374,6 +1388,7 @@ class PlayerTab(QWidget):
         pid = self.profile_combo.itemData(index)
         if pid is None:
             return
+        self._stop_preview()
         self._profile = resolve_profile(self._profiles, pid)
         # 每个档位有自己的默认试听音色(三角洲=口琴,默认=竖琴)
         self._apply_preview_defaults()

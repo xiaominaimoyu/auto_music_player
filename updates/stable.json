@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "version": "1.5.0",
-  "sequence": 150,
+  "version": "1.5.1",
+  "sequence": 151,
   "min_supported": "1.4.2",
   "urls": [
-    "https://gitee.com/muming04yue/auto_music_player/releases/download/v1.5.0/AutoMusicPlayer.exe",
-    "https://github.com/xiaominaimoyu/auto_music_player/releases/download/v1.5.0/AutoMusicPlayer.exe"
+    "https://gitee.com/muming04yue/auto_music_player/releases/download/v1.5.1/AutoMusicPlayer.exe",
+    "https://github.com/xiaominaimoyu/auto_music_player/releases/download/v1.5.1/AutoMusicPlayer.exe"
   ],
-  "size": 40146985,
-  "sha256": "53c3e2a5c9c86fcbd9e4428d78ddd207a12c0a4fd017c2da62ac178bc03b14f7",
-  "issued_at": "2026-09-27T00:00:00Z",
-  "expires_at": "2027-09-30T23:59:59Z",
+  "size": 40158959,
+  "sha256": "fb6b7d71d91f5c454628a41958994c72a4a4df0c80429eb731c79fb32a19aaf9",
+  "issued_at": "2026-11-05T00:20:41Z",
+  "expires_at": "2027-11-05T00:20:41Z",
   "db_schema_version": 2,
-  "release_notes": "v1.5.0 稳定版。第一阶段更新器仅验证并提示，不会自动下载或替换程序；请先核对发行页 SHA-256。",
-  "signature": "rDLEUJ0p1GcP6FecoIdtE/kt2gKuN1l9ELyULH/0tDbAw0QEX9juJx0UU8Tnf0k5j6vsLxwUX1LQDjYC3gUADA=="
+  "release_notes": "桌面 v1.5.1 已发布，详细变更见发行说明。更新程序前请退出应用并备份曲库，替换时保留配置与数据目录。",
+  "signature": "dvTsqjLIU/JMQWAFeudW1YTtRaTOOEofcgc4lidBh63QFlqs/nXZWqcJoBbLn68t2rD/p794M//1ihuBb4RjDw=="
 }

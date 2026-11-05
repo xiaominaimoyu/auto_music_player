@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
 
+from core.database import ScoreDB
+
 
 MAX_MANIFEST_BYTES = 1 * 1024 * 1024
 MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024
@@ -137,9 +139,14 @@ class UpdateManifest:
             raise UpdateCheckError("更新 manifest 的 schema 版本无效") from exc
         if schema_version != 1:
             raise UpdateCheckError(f"不支持的更新 manifest 版本：{schema_version}")
+        if db_schema_version < 0:
+            raise UpdateCheckError("更新 manifest 的 db_schema_version 不能为负数")
         version = str(value["version"]).strip().lstrip("vV")
         if not _VERSION_RE.fullmatch(version):
             raise UpdateCheckError("更新 manifest 的 version 无效")
+        min_supported = str(value.get("min_supported", "0")).strip().lstrip("vV")
+        if min_supported != "0" and not _VERSION_RE.fullmatch(min_supported):
+            raise UpdateCheckError("更新 manifest 的 min_supported 无效")
         sha256 = str(value["sha256"]).lower()
         if len(sha256) != 64 or any(ch not in "0123456789abcdef" for ch in sha256):
             raise UpdateCheckError("更新 manifest 的 sha256 无效")
@@ -147,7 +154,7 @@ class UpdateManifest:
             schema_version=schema_version,
             version=version,
             sequence=sequence,
-            min_supported=str(value.get("min_supported", "0")),
+            min_supported=min_supported,
             urls=tuple(normalized_urls),
             size=size,
             sha256=sha256,
@@ -275,11 +282,26 @@ def check_for_update(
     return UpdateCheckResult(False, error="；".join(errors) or "未配置更新 manifest")
 
 
+def check_download_compatibility(manifest, current_version):
+    """Apply data/version gates both in the UI and before download I/O."""
+    if manifest.db_schema_version > ScoreDB.SCHEMA_VERSION:
+        raise UpdateSecurityError(
+            f"新版曲库格式为 v{manifest.db_schema_version}，当前程序支持 v{ScoreDB.SCHEMA_VERSION}。"
+            "请先备份曲库，再从发布页手动更新。"
+        )
+    if _version_key(current_version) < _version_key(manifest.min_supported):
+        raise UpdateSecurityError(
+            f"当前版本 v{current_version} 低于此更新要求的 v{manifest.min_supported}。"
+            "请先备份曲库，再从发布页手动更新。"
+        )
+
+
 def download_update(manifest, directory, *, current_version, current_sequence, cancelled=None, progress=None):
     """下载到所选目录，校验后原子发布为新文件，绝不覆盖已有文件。"""
     manifest = UpdateManifest.from_dict(manifest.raw)
     verify_manifest(manifest, RELEASE_PUBLIC_KEY)
     _check_expiry(manifest)
+    check_download_compatibility(manifest, current_version)
     version_key = _version_key(manifest.version)
     current_key = _version_key(current_version)
     if (manifest.sequence < current_sequence or version_key < current_key
@@ -350,4 +372,5 @@ __all__ = [
     "RELEASE_PUBLIC_KEY",
     "UpdateCancelled",
     "download_update",
+    "check_download_compatibility",
 ]

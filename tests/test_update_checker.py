@@ -185,6 +185,20 @@ class UpdateCheckerTests(unittest.TestCase):
             opener.assert_not_called()
             self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_incompatible_schema_and_minimum_version_block_before_network_or_files(self):
+        with tempfile.TemporaryDirectory() as directory, patch("core.update_checker._open_https") as opener:
+            for values, expected in (({"db_schema_version": 99}, "曲库格式"),
+                                     ({"min_supported": "1.5.0"}, "低于此更新要求")):
+                with self.subTest(values=values), self.assertRaisesRegex(Exception, expected):
+                    self._download(self._download_manifest(**values), directory)
+            opener.assert_not_called()
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_invalid_compatibility_fields_are_rejected(self):
+        for values in ({"db_schema_version": -1}, {"min_supported": "broken"}):
+            with self.subTest(values=values), self.assertRaises(Exception):
+                UpdateManifest.from_dict(self._payload(**values))
+
 
 if __name__ == "__main__":
     unittest.main()

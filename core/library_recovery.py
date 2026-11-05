@@ -26,6 +26,19 @@ class RecoveryResult:
     backup: str | None = None
 
 
+def discover_legacy_libraries(target_path, data_dirs, *, db_file="scores.db"):
+    """Probe only known data roots, before creating the destination database."""
+    target = Path(target_path).resolve()
+    if target.exists():
+        return []
+    found = []
+    for root in data_dirs:
+        candidate = (Path(root) / db_file).resolve()
+        if candidate != target and candidate.is_file() and candidate not in found:
+            found.append(candidate)
+    return found
+
+
 def _digest(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:

@@ -7,6 +7,12 @@
 
 import fnmatch
 import os
+import sys
+
+sys.path.insert(0, SPECPATH)
+from tools.release_check import check_versions
+
+check_versions(SPECPATH)
 
 EXCLUDES = [
     # PyQt6 未使用的子模块

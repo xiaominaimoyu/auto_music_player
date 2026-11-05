@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -10,8 +11,10 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 from core.database import ScoreDB
+from core.event_player import EventPlayer
 from core.keymap import KeyMap
 from core.player import Player
+from core.profile import load_profiles
 from gui.player_tab import PlayerTab
 from gui.upload_tab import UploadTab
 
@@ -42,6 +45,11 @@ class FakePreviewPlayer(QObject):
 
     def stop(self):
         self.is_playing = False
+
+    def play_events(self, events, *, program=0, duration_ms=0):
+        self.calls.append({"events": events, "program": program, "duration_ms": duration_ms})
+        self.is_playing = True
+        return True
 
 
 class FakeDriver:
@@ -109,3 +117,63 @@ def test_player_page_preview_uses_selected_saved_score():
             tab._stop_preview()
             tab.deleteLater()
             db.conn.close()
+
+
+def test_game_preview_from_page_uses_profile_limits_and_disables_selectors(monkeypatch):
+    ensure_qapp()
+    monkeypatch.setattr("gui.player_tab.get_event_logger", lambda: None)
+    profiles = [replace(profile, preview_instrument="") for profile in
+                load_profiles(os.path.join(os.path.dirname(__file__), "..", "profiles"))]
+    for profile_id, expected, program in (("default", [60, 76, 50], 46),
+                                          ("delta_force_harmonica", [76, 50], 22)):
+        with tempfile.TemporaryDirectory() as directory:
+            db = ScoreDB(os.path.join(directory, "scores.db"))
+            notes = [{"notes": ["mid_1", "high_3"], "dur": 1.0, "semitones": [1, 0]},
+                     {"notes": ["low_2"], "dur": 1.0, "semitone": 1}]
+            db.add_score("游戏模拟", notes, bpm_default=120)
+            preview = FakePreviewPlayer()
+            driver = FakeDriver()
+            player = Player(KeyMap(MAPPING), driver=driver)
+            profile = next(item for item in profiles if item.id == profile_id)
+            tab = PlayerTab(db, player, {"humanize": {"enabled": False}},
+                            profile=profile, profiles=profiles, event_player=EventPlayer(driver),
+                            preview_player=preview)
+            try:
+                tab.refresh()
+                tab.preview_mode_combo.setCurrentIndex(tab.preview_mode_combo.findData("game"))
+                tab._toggle_preview()
+                call = preview.calls[0]
+                assert [pitch for _at, pitch, down in call["events"] if down] == expected
+                assert call["program"] == program
+                assert call["duration_ms"] >= 875
+                assert "降级" in tab.preview_status.text()
+                assert not tab.preview_mode_combo.isEnabled()
+                assert not tab.preview_instrument_combo.isEnabled()
+                tab._stop_preview()
+                assert tab.preview_instrument_combo.isEnabled()
+                other = "delta_force_harmonica" if profile_id == "default" else "default"
+                tab.profile_combo.setCurrentIndex(tab.profile_combo.findData(other))
+                assert tab.preview_instrument_combo.currentData() == (22 if other != "default" else 46)
+            finally:
+                tab.shutdown()
+                tab.deleteLater()
+                db.close()
+
+
+def test_original_preview_keeps_short_notes_and_per_note_accidentals():
+    ensure_qapp()
+    with tempfile.TemporaryDirectory() as directory:
+        db = ScoreDB(os.path.join(directory, "scores.db"))
+        notes = [{"notes": ["mid_1", "mid_3"], "dur": 0.01, "semitones": [0, 1]},
+                 {"notes": ["mid_5"], "dur": 1.0}]
+        db.add_score("校对", notes, source_file="old.mid", source_type="import")
+        preview = FakePreviewPlayer()
+        tab = PlayerTab(db, Player(KeyMap(MAPPING), driver=FakeDriver()), {}, preview_player=preview)
+        try:
+            tab.refresh()
+            tab._toggle_preview()
+            assert preview.calls[0]["notes"] == notes
+        finally:
+            tab.shutdown()
+            tab.deleteLater()
+            db.close()

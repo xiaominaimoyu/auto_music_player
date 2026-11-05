@@ -283,7 +283,7 @@ footer.doc {
   <header class="doc">
     <div class="eyebrow">AutoMusic Player · 技术方案</div>
     <h1>旧曲库安全 · 程序内自动更新 · 乐器试听</h1>
-    <p class="lede">三个问题的现状核查、分阶段实施步骤，以及本次已改动文件的逐条记录。方案稿状态，未完成处已标注。</p>
+    <p class="lede">P0、迁移备份提示与演练已完成本地实施。源码和签名清单验证通过，线上清单同步及后续版本发布按发布流程推进。</p>
     <div class="meta">
       <span>基线 <b>v1.5.1 · sequence 151</b></span>
       <span>平台 <b>Windows 便携 / Store 双通道</b></span>
@@ -297,13 +297,13 @@ footer.doc {
         <div class="q">问题一</div>
         <div class="a">更新后旧乐谱会不会丢</div>
         <span class="pill ok">只换 EXE 不会丢</span>
-        <p class="sans" style="font-size:13.5px;color:var(--ink-2);margin:0">风险来自整包覆盖解压、数据目录漂移、未来 schema 升级无门禁。</p>
+        <p class="sans" style="font-size:13.5px;color:var(--ink-2);margin:0">保留原配置和数据目录。启动发现旧库后确认导入，迁移备份路径可见，未来格式会被拒绝。</p>
       </div>
       <div class="sum-card">
         <div class="q">问题二</div>
         <div class="a">程序内自动下载更新</div>
-        <span class="pill warn">链路已通 · 清单落后</span>
-        <p class="sans" style="font-size:13.5px;color:var(--ink-2);margin:0">发布清单仍是 1.5.0 / 150，用户点检查更新看到的是失败。</p>
+        <span class="pill warn">本地已重签 · 待发布同步</span>
+        <p class="sans" style="font-size:13.5px;color:var(--ink-2);margin:0">本地清单为 1.5.1 / 151，两个发行 EXE 大小和哈希均已核对。新增源码功能随后续版本发布。</p>
       </div>
       <div class="sum-card">
         <div class="q">问题三</div>
@@ -328,8 +328,8 @@ footer.doc {
         <tbody>
           <tr><td class="n">R1</td><td>整包覆盖解压</td><td>发布包内含 config.yaml 与空 data/</td><td>旧 scores.db 被冲掉或指向空目录</td></tr>
           <tr><td class="n">R2</td><td>data_mode 变更</td><td>便携版与安装版互切</td><td>库还在但看不见，表现为「乐谱全没了」</td></tr>
-          <tr><td class="n">R3</td><td>schema 升级无门禁</td><td>清单里的 db_schema_version 从未被消费</td><td>老客户端下载新程序，启动才发现版本过高</td></tr>
-          <tr><td class="n">R4</td><td>迁移备份不可见</td><td>备份是静默行为</td><td>出问题时用户不知道备份在哪</td></tr>
+          <tr><td class="n">R3</td><td>schema 版本兼容</td><td>清单要求更高数据库格式或客户端过旧</td><td>下载前拒绝并提示备份后手动升级，当前程序也拒绝打开未来格式</td></tr>
+          <tr><td class="n">R4</td><td>迁移备份位置</td><td>首次 schema 升级</td><td>状态栏和曲库页显示备份路径</td></tr>
         </tbody>
       </table>
     </div>
@@ -345,7 +345,7 @@ footer.doc {
     <p><code>core/update_checker.py</code> 已具备：Ed25519 验签（canonical JSON）、双镜像取最高有效序列、拒绝回滚、签发/过期时间校验、强制 HTTPS、清单 1 MB 上限、更新包 2 GB 上限、边下边算 SHA-256、临时文件校验通过后才原子改名且绝不覆盖同名文件、可取消并上报进度。</p>
 
     <div class="callout crit">
-      <strong>必须立刻处理：</strong>程序是 1.5.1 / sequence 151，而 <code>updates/stable.json</code> 仍是 1.5.0 / sequence 150。两个镜像都会命中「拒绝低于当前序列号的更新」，用户点「检查更新」得到的是失败提示，而不是「已是最新」。
+      <strong>本地完成，线上待同步。</strong>程序和本地清单均为 1.5.1 / sequence 151。重签后模拟 1.5.0 客户端可发现新版，1.5.1 判断为最新。GitHub/Gitee 正式镜像清单需要按文件清单确认流程发布。
     </div>
 
     <p>自替换没有实现，是刻意为之：<code>docs/发布签名与更新器门禁.md</code> 要求正式 Authenticode 证书与回滚测试证据齐备后才进入第二阶段。当前本机有 signtool，但没有可正式发布的证书，因此保持「下载并提示手动替换」。</p>
@@ -357,7 +357,7 @@ footer.doc {
 
     <div class="steps">
       <div class="step done">
-        <div class="step-head"><span class="id">P0-4</span><span class="title">演奏页音色选择 + 模拟游戏演奏</span></div>
+        <div class="step-head"><span class="id">S1–S3</span><span class="title">演奏页音色选择与模拟游戏演奏</span></div>
         <p>新增「试听音色」（大钢琴 / 竖琴 / 口琴 / Koto 近似筝音）与「试听方式」（校对原谱 / 模拟游戏演奏）。模拟模式复用真实演奏的编译链路：21 键档位走 <code>direct_preview_events</code>（含扫弦、抖动、gap），三角洲档位走 <code>build_event_plan</code> + <code>compiled_preview_events</code>（含八度/半音修饰、和弦降级计数），全程只发声不发送输入。已随提交 2 入库。</p>
         <p class="accept"><b>已完成。</b></p>
       </div>
@@ -374,27 +374,32 @@ footer.doc {
       <div class="step done">
         <div class="step-head"><span class="id">S3</span><span class="title">全量回归</span></div>
         <p><code>python -m pytest -q</code> 与 <code>python -m unittest discover -s tests</code> 串行各跑一遍（日志测试使用固定临时目录，不能并行）。</p>
-        <p class="accept"><b>已完成：594 passed / 2 skipped；502 tests OK。</b></p>
+        <p class="accept"><b>已完成，续作全量结果为 609 passed / 2 skipped；515 tests OK / 2 skipped。</b></p>
       </div>
-      <div class="step">
+      <div class="step done">
         <div class="step-head"><span class="id">P0-1</span><span class="title">启动时探测旧库并询问</span></div>
         <p>目标 <code>scores.db</code> 不存在、但另一侧存在旧库时，弹一次「发现旧曲库」；用户确认后复用 <code>recover_library()</code>。不自动改配置、不自动迁移、原库只读。</p>
-        <p class="accept"><b>验收：</b>便携版放旧库到 LocalAppData 侧能被发现；用户拒绝后原库字节不变。</p>
+        <p class="accept"><b>已验证。</b>已知另一侧旧库可被发现，拒绝后旧库字节相同，确认后界面刷新出旧谱。</p>
       </div>
-      <div class="step">
+      <div class="step done">
         <div class="step-head"><span class="id">P0-2</span><span class="title">用 db_schema_version 做发布门禁</span></div>
         <p>在 <code>download_update()</code> 联网前判断 <code>manifest.db_schema_version &gt; ScoreDB.SCHEMA_VERSION</code> 即拒绝，提示手动更新；<code>min_supported</code> 不满足时给出警告。</p>
-        <p class="accept"><b>验收：</b>构造 db_schema_version=99 的已签名清单，下载被拒且未发起网络请求。</p>
+        <p class="accept"><b>已验证。</b>签名清单要求 schema 99 或更高最低客户端版本时，下载联网前被拒，保存目录为空。</p>
       </div>
-      <div class="step">
+      <div class="step done">
         <div class="step-head"><span class="id">P0-3</span><span class="title">版本三处同步，缺一拒发</span></div>
         <p><code>version.txt</code> → <code>core/version.py</code> → <code>updates/stable.json</code> 三者必须一致，由发布脚本比对，不一致就终止打包；清单随后用 <code>tools/update_manifest.py sign</code> 重签。</p>
-        <p class="accept"><b>验收：</b>只改 version.txt 时构建失败并指出缺哪一处；<code>verify</code> 通过后客户端显示「已是最新版本」。</p>
+        <p class="accept"><b>已验证。</b>spec 在 Analysis 前执行版本检查，单独更改 version.txt 或清单序列号都会失败。最终文件的哈希在构建后由 release_check 校验。</p>
       </div>
-      <div class="step">
+      <div class="step done">
         <div class="step-head"><span class="id">P1</span><span class="title">迁移备份可见化</span></div>
-        <p>首次启动若发生过 schema 迁移，状态栏提示备份路径。现在备份是静默做的。</p>
-        <p class="accept"><b>验收：</b>用 v1 库启动一次，状态栏出现路径且文件存在。</p>
+        <p>首次发生 schema 迁移，状态栏和曲库页同时显示备份路径。</p>
+        <p class="accept"><b>已验证。</b>v1 库升级后提示可见，备份文件可打开并保留 v1 schema。</p>
+      </div>
+      <div class="step done">
+        <div class="step-head"><span class="id">P0-4 / P2</span><span class="title">本地清单重签与迁移演练</span></div>
+        <p><code>update_manifest.py prepare</code> 从最终 EXE 生成并签署清单，错误签名钥会被拒。<code>rehearse_library_migration.py</code> 在临时副本中验证迁移、备份和重复恢复。</p>
+        <p class="accept"><b>已验证。</b>两个发行 EXE 均为 40,158,959 字节，SHA-256 为 <span class="mono">fb6b7d71d91f5c454628a41958994c72a4a4df0c80429eb731c79fb32a19aaf9</span>。</p>
       </div>
       <div class="step">
         <div class="step-head"><span class="id">P2</span><span class="title">自替换第二阶段（需拍板）</span></div>
@@ -462,19 +467,18 @@ footer.doc {
     </div>
 
     <div class="callout" style="margin-top:22px">
-      <strong>仍未做（待拍板）：</strong>真实采样音色（当前为系统 GM 四档，筝类为 Koto 近似）；
-      旧库启动探测、<code>db_schema_version</code> 门禁、版本三处同步与清单重签。
+      <strong>续作已完成。</strong>旧库启动探测、版本和格式兼容性检查、迁移备份提示、演练脚本及本地清单重签已实现。试听还补齐了逐音升号保留、原谱短音校对、旧档位默认音色回退及播放中选择锁定。
     </div>
 
     <h3>已验证</h3>
     <ul>
       <li><code>py_compile</code> 三个改动文件通过。</li>
       <li><code>pytest tests/test_game_preview.py</code> → <b>8 passed</b>。</li>
-      <li>全量 <code>pytest -q</code> → <b>594 passed, 2 skipped</b>；<code>unittest discover -s tests</code> → <b>Ran 502 tests, OK</b>。</li>
+      <li>续作全量 <code>pytest -q</code> 为 <b>609 passed, 2 skipped, 28 subtests</b>，<code>unittest discover -s tests</code> 为 <b>515 tests OK, 2 skipped</b>。既有日志和配置测试仍有 ResourceWarning。</li>
       <li>旧行为未被破坏：「试听方式」默认选中「校对原谱」，<code>PreviewPlayer.play()</code> 的调用形态不变。</li>
     </ul>
 
-    <h3>本次提交</h3>
+    <h3>凌晨会话记录的提交</h3>
     <div class="tablewrap">
       <table>
         <thead><tr><th>提交</th><th>内容</th><th>文件数</th></tr></thead>
@@ -489,12 +493,12 @@ footer.doc {
   </section>
 
   <section class="decisions">
-    <h2><span class="num">05</span>待拍板</h2>
+    <h2><span class="num">05</span>发布与后续验收</h2>
     <ol>
-      <li>本次 5 个文件的半成品改动，继续完成还是回滚到上一轮状态？</li>
-      <li><code>updates/stable.json</code> 落后一个版本，本次一并重签还是随下个版本统一处理？</li>
-      <li>真实采样音色（SF2）是否要做，还是 GM 四档够用？</li>
-      <li>自替换第二阶段现在启动，还是等正式签名证书到手？</li>
+      <li>确认文件清单后按 Git 发布流程同步线上双镜像清单。</li>
+      <li>本轮源码新增功能需要后续版本构建和发布，本地 v1.5.1 清单指向已发布的 v1.5.1 EXE。</li>
+      <li>真实采样音色为可选项，当前四档系统 GM 可用，筝类为 Koto 近似；待实机听感对照。</li>
+      <li>退出后自动替换按正式签名、干净机和回滚门禁推进。</li>
     </ol>
   </section>
 

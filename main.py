@@ -20,6 +20,7 @@ from core.event_logger import configure_event_logger
 from core.event_player import EventPlayer
 from core.humanize import HumanizeParams
 from core.keyboard_driver import KeyboardDriver
+from core.library_recovery import discover_legacy_libraries
 from core.timing import timing_config
 from core.keymap import KeyMap
 from core.play_logger import PlayLogger
@@ -223,7 +224,16 @@ def main():
             print(f"Store 数据迁移失败，将保留现有数据并继续启动: {migration.error}", file=sys.stderr)
     ensure_omr_components(data_dir)
     player_cfg = cfg.get("player", {})
-    db = ScoreDB(os.path.join(data_dir, app_cfg.get("db_file", "scores.db")))
+    db_file = app_cfg.get("db_file", "scores.db")
+    db_path = os.path.join(data_dir, db_file)
+    relative_data = configured_data_dir if not os.path.isabs(configured_data_dir) else "data"
+    legacy_libraries = discover_legacy_libraries(
+        db_path,
+        [os.path.join(os.path.dirname(config_path), relative_data),
+         os.path.join(stable_app_root(), relative_data)],
+        db_file=db_file,
+    )
+    db = ScoreDB(db_path)
     keymap = KeyMap(cfg["keymap"])
     # 游戏档位:profiles/ 目录优先,缺失时用 config.yaml 的 keymap 合成默认档位
     profile_base = data_dir if getattr(sys, "frozen", False) else "."
@@ -335,6 +345,7 @@ def main():
         event_player=event_player,
         event_log_dir=event_log_dir,
         export_dir=os.path.join(data_dir, "exports"),
+        legacy_libraries=legacy_libraries,
     )
     win.show()
     sys.exit(app.exec())

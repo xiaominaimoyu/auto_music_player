@@ -220,8 +220,13 @@ class LibraryTab(QWidget):
             self, "选择旧版本 data 目录中的 scores.db", "",
             "SQLite 曲库或备份 (*.db *.bak *.sqlite *.db.legacy-*);;所有文件 (*.*)",
         )
+        if path:
+            self.recover_from(path)
+
+    def recover_from(self, path, *, title="找回旧曲库"):
+        """Share manual and startup recovery, including user confirmation."""
         if not path or not AppDialog.confirm(
-            self, "找回旧曲库",
+            self, title,
             f"从 {path} 导入乐谱及其来源附件、演奏偏好？\n\n"
             "请先退出使用旧曲库的程序，并将旧 sources 目录与数据库放在一起。"
             "开始前会备份当前数据库，完成后可在这里查看导入的乐谱。",
@@ -238,6 +243,7 @@ class LibraryTab(QWidget):
         if result.backup:
             detail += f"\n操作前的曲库备份：{result.backup}"
         AppDialog.show_info(self, "找回完成", detail)
+        return result
 
     def _import_score(self):
         path, _ = QFileDialog.getOpenFileName(

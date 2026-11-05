@@ -32,7 +32,10 @@ from PyQt6.QtWidgets import (
 
 from core.app_identity import is_store_package
 from core.preview_player import PreviewPlayer
-from core.update_checker import RELEASE_PUBLIC_KEY, UpdateCancelled, check_for_update, download_update
+from core.update_checker import (
+    RELEASE_PUBLIC_KEY, UpdateCancelled, UpdateSecurityError,
+    check_download_compatibility, check_for_update, download_update,
+)
 from core.version import APP_VERSION, UPDATE_SEQUENCE
 from gui.library_tab import LibraryTab
 from gui.log_tab import PlayLogTab
@@ -216,6 +219,7 @@ class MainWindow(QMainWindow):
         preview_player=None,
         event_log_dir=None,
         export_dir=None,
+        legacy_libraries=None,
     ):
         super().__init__()
         self._cfg = cfg
@@ -270,6 +274,17 @@ class MainWindow(QMainWindow):
         )
 
         self._build_ui()
+        if db.pre_migration_backup_path:
+            backup_message = f"曲库升级前已自动备份到 {db.pre_migration_backup_path}"
+            self.set_status(backup_message)
+            self.library_tab.location_label.setText(
+                f"{self.library_tab.location_label.text()}\n{backup_message}"
+            )
+        if legacy_libraries:
+            # The candidate list was captured before ScoreDB created the empty library.
+            QTimer.singleShot(0, lambda: self.library_tab.recover_from(
+                legacy_libraries[0], title="发现旧曲库"
+            ))
         self.hotkey_play_requested.connect(self.player_tab.mini_play)
         self.hotkey_stop_requested.connect(self.player_tab.mini_stop)
 
@@ -580,6 +595,11 @@ class MainWindow(QMainWindow):
             return
         manifest = result.manifest
         self.set_status(f"发现更新 v{manifest.version}")
+        try:
+            check_download_compatibility(manifest, APP_VERSION)
+        except UpdateSecurityError as exc:
+            AppDialog.show_warning(self, "需要手动更新", str(exc))
+            return
         if not AppDialog.confirm(
             self, "下载更新",
             f"发现 v{manifest.version}（{manifest.size / 1048576:.1f} MB）。\n\n"
