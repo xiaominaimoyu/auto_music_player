@@ -24,6 +24,33 @@ RADIUS_LG = 16
 FONT_SANS = '"Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif'
 FONT_MONO = '"Consolas", "Cascadia Code", monospace'
 
+def appearance_qss(settings, root_name="AppRoot"):
+    """限定于背景容器，避免预览影响弹窗和演奏悬浮小窗。"""
+    if settings.mode == "default":
+        return ""
+    root = f"QWidget#{root_name}"
+    alpha = round(settings.panel_opacity * 255 / 100)
+    chrome = max(235, alpha)
+    return f"""
+        {root} {{ background: transparent; color: {INK}; }}
+        {root} QStackedWidget,
+        {root} QStackedWidget > QWidget,
+        {root} QScrollArea#ContentScroll,
+        {root} QScrollArea#ContentScroll > QWidget,
+        {root} QWidget#ContentInner {{ background: transparent; }}
+        {root} QWidget#TitleBar,
+        {root} QWidget#Sidebar,
+        {root} QWidget#PageHeader,
+        {root} QWidget#StatusBar {{ background: rgba(22, 22, 30, {chrome}); }}
+        {root} QFrame#SectionCard,
+        {root} QFrame#LogSummaryCard {{ background: rgba(22, 22, 30, {alpha}); }}
+        {root} QTableWidget,
+        {root} QLabel#LogEmptyText,
+        {root} QListWidget#LogTimelineList {{ background: rgba(22, 22, 30, {alpha}); color: {INK}; }}
+        {root} QTableWidget {{ alternate-background-color: rgba(30, 30, 40, {alpha}); }}
+    """
+
+
 APP_QSS = f"""
 * {{
     font-family: {FONT_SANS};
@@ -38,7 +65,7 @@ QWidget#TitleBar {{
     background: {SURFACE};
     border-bottom: 1px solid {LINE};
 }}
-QPushButton#TitleBarTitle {{
+QLabel#TitleBarTitle {{
     color: {INK_2};
     font-size: 12px;
     font-weight: 500;
@@ -96,6 +123,15 @@ QLabel#PageTitle {{
 QLabel#PageSub {{
     color: {INK_2};
     font-size: 13px;
+}}
+QLabel#LogEmptyText {{
+    color: {INK_2};
+    font-size: 13px;
+}}
+QLabel#LogDetailTitle {{
+    color: {INK};
+    font-size: 16px;
+    font-weight: 600;
 }}
 QScrollArea#ContentScroll {{
     background: transparent;

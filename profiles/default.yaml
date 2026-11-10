@@ -39,6 +39,10 @@ pitch_direct_overrides:
   low_6: N
   low_7: M
 
+# 试听页默认音色。鸣潮/原神的演奏乐器偏竖琴类,试听默认用它,
+# 名字须与 core/preview_player.py 中 PREVIEW_INSTRUMENTS 的键一致。
+preview_instrument: 竖琴
+
 # 旧 21 键模型(供尚未迁移到编译器的模块使用)
 legacy_keymap:
   high: [Q, W, E, R, T, Y, U]

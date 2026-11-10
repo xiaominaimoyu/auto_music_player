@@ -21,11 +21,12 @@ keymap:
   low: [Z, X, C, V, B, N, M]
 
 update:
-  # 第一阶段只检查并提示，不自动下载或替换 EXE。
+  # 定期检查新版，确认后将通过校验的 EXE 保存到所选目录，供手动替换。
   enabled: true
   manifest_urls:
     - https://gitee.com/muming04yue/auto_music_player/raw/main/updates/stable.json
     - https://raw.githubusercontent.com/xiaominaimoyu/auto_music_player/main/updates/stable.json
+  # 发布验签公钥内置于程序，旧版配置中的 public_key 不参与验签。
   public_key: "6QF3M1S8xGQslxyJc2RLlCm8xy0HTRYXZvXk6RgMInY="
   check_interval_hours: 24
 
@@ -63,8 +64,15 @@ player:
     # 乐句边界(长音或休止之后)追加的呼吸停顿(毫秒)
     # 已优化:18→25ms,换气感更明显
     breath_ms: 25
-    # 乐句内起音偏移的相关系数，避免独立白噪声式抖动
+    # 乐句内起音偏移的相关系数，避免独立白噪声式抖动。
+    # 实际标准差会校正到等于 jitter_ms，而不是被相关系数缩小。
     jitter_correlation: 0.65
+    # 乐句速度弧的幅度(毫秒)。整句求和约等于 0，不会越播越拖。
+    tempo_arc_ms: 8
+    # 每小节第一拍提前的毫秒数，形成重音。
+    accent_ms: 4
+    # 和弦扫弦总时长(毫秒)。0 表示同时按下；建议 8–25。
+    strum_ms: 12
   # 目标窗口焦点检测:演奏中失去目标窗口焦点时自动暂停(断点保留,可续播)
   focus_check:
     # 是否启用

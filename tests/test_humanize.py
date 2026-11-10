@@ -13,7 +13,9 @@ from core.keymap import KeyMap
 from core.player import Player
 
 # 结构性测试用零 jitter/breath/leap,让塑形规则的贡献可被精确观测
-STILL = HumanizeParams(jitter_ms=0.0, breath_ms=0.0, leap_ms=0.0)
+STILL = HumanizeParams(
+    jitter_ms=0.0, breath_ms=0.0, leap_ms=0.0, tempo_arc_ms=0.0, accent_ms=0.0,
+)
 
 
 def el(notes, dur=1.0):
@@ -52,31 +54,41 @@ class TestPlanTimingsStructure(unittest.TestCase):
         self.assertLessEqual(ts[2][1], hi)
 
     def test_breath_after_rest(self):
-        """休止后的下一音应附加呼吸停顿(jitter=0 时 offset 必为正)。"""
-        p = HumanizeParams(jitter_ms=0.0, breath_ms=20.0, leap_ms=0.0)
+        """换气从上一音的按住里借，下一音仍落在拍点上。"""
+        p = HumanizeParams(
+            jitter_ms=0.0, breath_ms=20.0, leap_ms=0.0, tempo_arc_ms=0.0, accent_ms=0.0,
+        )
         els = [el(["mid_1"]), {"notes": [], "dur": 1.0}, el(["mid_2"])]
         ts = plan_timings(els, p, random.Random(3))
-        self.assertEqual(ts[0][0], 0.0)   # 首音无前置元素
-        self.assertGreater(ts[2][0], 0.0)  # 呼吸 × uniform(0.6,1.0) ≥ 12ms
-        self.assertLess(ts[2][0], 20.0)
+        self.assertEqual(ts[2][0], 0.0)
+        self.assertGreaterEqual(ts[0][2], 12.0)
+        self.assertLessEqual(ts[0][2], 20.0)
 
     def test_breath_after_long_note(self):
-        """长音(≥2 拍)结尾后的下一音按乐句开头处理,带呼吸。"""
-        p = HumanizeParams(jitter_ms=0.0, breath_ms=20.0, leap_ms=0.0)
+        """长音结尾的换气同样记在长音自己身上，不推迟下一音。"""
+        p = HumanizeParams(
+            jitter_ms=0.0, breath_ms=20.0, leap_ms=0.0, tempo_arc_ms=0.0, accent_ms=0.0,
+        )
         els = [el(["mid_1"], 2.0), el(["mid_2"], 1.0)]
         ts = plan_timings(els, p, random.Random(3))
-        self.assertGreater(ts[1][0], 0.0)
+        self.assertEqual(ts[1][0], 0.0)
+        self.assertGreater(ts[0][2], 0.0)
 
     def test_no_breath_after_short_note(self):
         """普通短音符之间不引入呼吸。"""
-        p = HumanizeParams(jitter_ms=0.0, breath_ms=20.0, leap_ms=0.0)
+        p = HumanizeParams(
+            jitter_ms=0.0, breath_ms=20.0, leap_ms=0.0, tempo_arc_ms=0.0, accent_ms=0.0,
+        )
         els = [el(["mid_1"], 1.0), el(["mid_2"], 1.0)]
         ts = plan_timings(els, p, random.Random(3))
         self.assertEqual(ts[1][0], 0.0)
+        self.assertEqual(len(ts[0]), 2)
 
     def test_leap_adds_offset(self):
         """音高大跳进(≥阈值)附加换指时间。"""
-        p = HumanizeParams(jitter_ms=0.0, breath_ms=0.0, leap_ms=5.0)
+        p = HumanizeParams(
+            jitter_ms=0.0, breath_ms=0.0, leap_ms=5.0, tempo_arc_ms=0.0, accent_ms=0.0,
+        )
         els = [el(["mid_1"]), el(["high_1"])]   # 差值 7 ≥ 4
         ts = plan_timings(els, p, random.Random(3))
         self.assertGreater(ts[1][0], 0.0)

@@ -73,6 +73,8 @@ class GameProfile:
     modifier_policy: ModifierPolicy = ModifierPolicy.OCTAVE_FIRST
     chord_policy: ChordPolicy = ChordPolicy.CHORD_FIRST
     legacy_keymap: dict | None = None
+    # 试听默认音色名(见 core.preview_player.PREVIEW_INSTRUMENTS);空 = 跟随界面首选。
+    preview_instrument: str = ""
 
     def __post_init__(self):
         if not self.id:
@@ -137,6 +139,7 @@ def _from_dict(data: dict) -> GameProfile:
         modifier_policy=_POLICY_NAMES[policy],
         chord_policy=_CHORD_NAMES[chord],
         legacy_keymap=data.get("legacy_keymap"),
+        preview_instrument=str(data.get("preview_instrument") or "").strip(),
     )
 
 

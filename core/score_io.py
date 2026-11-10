@@ -106,8 +106,10 @@ def _native_json_result(data, stem: str) -> ImportResult | None:
             return None
         if data.get("format") not in (None, JSON_FORMAT):
             return None
-        if data.get("format") == JSON_FORMAT and int(data.get("version", 1)) != JSON_VERSION:
-            raise ValueError(f"不支持的乐谱 JSON 版本: {data.get('version')}")
+        if data.get("format") == JSON_FORMAT:
+            version = _json_int(data, "version", 1, "乐谱 JSON 版本")
+            if version != JSON_VERSION:
+                raise ValueError(f"不支持的乐谱 JSON 版本: {data.get('version')}")
         notes = data["notes"]
         name = str(data.get("name") or stem)
         try:
@@ -206,8 +208,17 @@ def _external_song(data: dict, *, stem: str, inherited_bpm=120) -> tuple[SourceS
     )
 
 
+def _json_int(data: dict, key: str, default, label: str) -> int:
+    raw = data.get(key, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} 不是整数（{key}={raw!r}）") from None
+
+
 def _rich_source_song(data: dict, stem: str) -> SourceSong:
-    if int(data.get("version", 1)) != 1:
+    version = _json_int(data, "version", 1, "来源乐谱版本")
+    if version != 1:
         raise ValueError(f"不支持的来源乐谱版本: {data.get('version')}")
     raw_notes = data.get("notes")
     if not isinstance(raw_notes, list):

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,10 +23,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.update_checker import (  # noqa: E402
+    RELEASE_PUBLIC_KEY,
     UpdateManifest,
     _canonical_json,
     verify_manifest,
 )
+from core.database import ScoreDB  # noqa: E402
+from tools.release_check import runtime_version  # noqa: E402
 
 
 def _cryptography():
@@ -106,11 +111,49 @@ def sign_manifest(args) -> int:
     value["signature"] = base64.b64encode(
         private_key.sign(_canonical_json(value))
     ).decode("ascii")
+    verify_manifest(UpdateManifest.from_dict(value), RELEASE_PUBLIC_KEY)
     output = Path(args.output).resolve() if args.output else manifest_path
     _write_atomic(
         output,
         (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
+    print(output)
+    return 0
+
+
+def prepare_manifest(args) -> int:
+    """Use the final artifact and runtime metadata to avoid hand-copied release hashes."""
+    version, sequence = runtime_version(PROJECT_ROOT)
+    if (PROJECT_ROOT / "version.txt").read_text(encoding="utf-8-sig").strip() != version:
+        raise ValueError("请先同步 version.txt 与 core/version.py")
+    artifact = Path(args.artifact).resolve(strict=True)
+    digest = hashlib.sha256()
+    with artifact.open("rb") as stream:
+        if stream.read(2) != b"MZ":
+            raise ValueError("--artifact 必须是 Windows EXE")
+        stream.seek(0)
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    value = {
+        "schema_version": 1,
+        "version": version,
+        "sequence": sequence,
+        "min_supported": args.min_supported,
+        "urls": args.url,
+        "size": artifact.stat().st_size,
+        "sha256": digest.hexdigest(),
+        "issued_at": now.isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + timedelta(days=365)).isoformat().replace("+00:00", "Z"),
+        "db_schema_version": ScoreDB.SCHEMA_VERSION,
+        "release_notes": Path(args.notes).read_text(encoding="utf-8") if args.notes else f"v{version}",
+    }
+    UpdateManifest.from_dict({**value, "signature": "unsigned"})
+    private_key = _load_private_key(args.private_key)
+    value["signature"] = base64.b64encode(private_key.sign(_canonical_json(value))).decode("ascii")
+    verify_manifest(UpdateManifest.from_dict(value), RELEASE_PUBLIC_KEY)
+    output = Path(args.output).resolve()
+    _write_atomic(output, (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     print(output)
     return 0
 
@@ -150,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
     sign.add_argument("--private-key", required=True)
     sign.add_argument("--output")
     sign.set_defaults(func=sign_manifest)
+
+    prepare = commands.add_parser("prepare", help="generate and sign a manifest from the final desktop EXE")
+    prepare.add_argument("--artifact", required=True)
+    prepare.add_argument("--private-key", required=True)
+    prepare.add_argument("--url", action="append", required=True)
+    prepare.add_argument("--min-supported", default="1.4.2")
+    prepare.add_argument("--notes", help="release notes file")
+    prepare.add_argument("--output", default=str(PROJECT_ROOT / "updates" / "stable.json"))
+    prepare.set_defaults(func=prepare_manifest)
 
     check = commands.add_parser("verify", help="verify a signed manifest")
     check.add_argument("manifest")
