@@ -63,6 +63,11 @@ class AdaptOptions:
     transpose: int = 0
     fold_octaves: bool = True
     bpm: float | None = None
+    # melody 风格专用。其它风格忽略这些字段，因此旧调用结果不变。
+    onset_window_s: float = 0.032
+    melody_cost: bool = False
+    quantize_beats: float = 0.25
+    quantize_strength: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -381,8 +386,14 @@ def _resolve_options(options: AdaptOptions) -> None:
         raise ValueError("适配选项必须是 AdaptOptions")
     if options.track != "auto" and options.track is not None:
         _require_int(options.track, "选定音轨")
-    if options.style not in {"preserve", "original", "piano"}:
-        raise ValueError("style 必须为 preserve、original 或 piano")
+    if options.style not in {"preserve", "original", "piano", "melody"}:
+        raise ValueError("style 必须为 preserve、original、piano 或 melody")
+    window = float(getattr(options, "onset_window_s", 0.032))
+    if not 0.02 <= window <= 0.05:
+        raise ValueError("起音聚类窗口必须在 20 到 50 毫秒之间")
+    strength = float(getattr(options, "quantize_strength", 0.0))
+    if not 0.0 <= strength <= 1.0:
+        raise ValueError("量化强度必须在 0 到 1 之间")
     transpose = _require_int(options.transpose, "移调")
     if not -24 <= transpose <= 24:
         raise ValueError("移调必须在 -24 到 24 个半音之间")
@@ -473,7 +484,40 @@ def adapt_source_song(song: SourceSong, options: AdaptOptions = AdaptOptions()) 
 
     selected, selected_track = _selected_source_notes(song, options)
     source = list(selected)
-    if options.style == "preserve":
+    map_transpose = options.transpose
+    phrase_moves = 0
+    if options.style == "melody":
+        from core.melody import extract_melody, phrase_fold, quantize_notes
+
+        prepared = source
+        if options.quantize_strength > 0:
+            prepared = quantize_notes(
+                prepared,
+                bpm=bpm,
+                grid_beats=options.quantize_beats,
+                strength=options.quantize_strength,
+            )
+        melody = extract_melody(
+            prepared,
+            window_s=options.onset_window_s,
+            cost=options.melody_cost,
+        )
+        if options.transpose:
+            melody = [
+                SourceNote(note.start_s, note.end_s, note.pitch + options.transpose, note.track)
+                for note in melody
+            ]
+        if options.fold_octaves and melody:
+            melody, phrase_moves = phrase_fold(melody)
+        source = melody
+        segments = [
+            _Segment(note.start_s, note.end_s, (index,))
+            for index, note in enumerate(source)
+        ]
+        polyphony_count = max(0, len(selected) - len(melody))
+        bridge_count = 0
+        map_transpose = 0
+    elif options.style == "preserve":
         segments, polyphony_count = _preserve_segments(source)
         bridge_count = 0
     else:
@@ -503,6 +547,10 @@ def adapt_source_song(song: SourceSong, options: AdaptOptions = AdaptOptions()) 
         degradations, warnings, "short_gap_bridged", bridge_count,
         f"已连接 {bridge_count} 个不超过 {_DEFAULT_BRIDGE_GAP_S:g} 秒的演奏短缝。",
     )
+    _add_degradation(
+        degradations, warnings, "phrase_octave_fold", phrase_moves,
+        f"已按乐句整体移动 {phrase_moves} 个乐句的八度，句内音程保持不变。",
+    )
 
     rendered: list[tuple[float, float, list[str], int]] = []
     folded_sources: set[int] = set()
@@ -512,7 +560,7 @@ def adapt_source_song(song: SourceSong, options: AdaptOptions = AdaptOptions()) 
         mapped_members = []
         for index in segment.members:
             mapped = _map_pitch(
-                source[index].pitch, transpose=options.transpose, fold_octaves=options.fold_octaves
+                source[index].pitch, transpose=map_transpose, fold_octaves=options.fold_octaves
             )
             if mapped is None:
                 unsupported_sources.add(index)
@@ -520,7 +568,7 @@ def adapt_source_song(song: SourceSong, options: AdaptOptions = AdaptOptions()) 
             note_id, semitone, folded = mapped
             if folded:
                 folded_sources.add(index)
-            mapped_members.append((source[index].pitch + options.transpose, note_id, semitone))
+            mapped_members.append((source[index].pitch + map_transpose, note_id, semitone))
         if not mapped_members:
             rendered.append((segment.start_s, segment.end_s, [], 0))
             continue

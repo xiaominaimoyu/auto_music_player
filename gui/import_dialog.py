@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from core.melody import extract_melody, recommend_transpose
 from core.source_score import AdaptOptions, recommend_track
 
 
@@ -46,16 +47,29 @@ class MidiImportDialog(QDialog):
 
         self.style_combo = QComboBox()
         self.style_combo.setObjectName("MidiStyleCombo")
-        self.style_combo.addItem("钢琴旋律适配（推荐）", "piano")
+        self.style_combo.addItem("旋律跟踪（推荐）", "melody")
+        self.style_combo.addItem("钢琴旋律适配", "piano")
         self.style_combo.addItem("最高活动音单旋律", "original")
         self.style_combo.addItem("保留严格同时和弦", "preserve")
         form.addRow("处理方式", self.style_combo)
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.setObjectName("MidiKeyboardProfile")
+        self.profile_combo.addItem("21 键（鸣潮 / 原神，无黑键）", "21key")
+        self.profile_combo.addItem("三角洲口琴（可升半音）", "delta")
+        form.addRow("目标键盘", self.profile_combo)
 
         self.transpose_spin = QSpinBox()
         self.transpose_spin.setObjectName("MidiTransposeSpin")
         self.transpose_spin.setRange(-24, 24)
         self.transpose_spin.setSuffix(" 半音")
+        self.transpose_spin.valueChanged.connect(self._on_transpose_edited)
         form.addRow("移调", self.transpose_spin)
+
+        self.recommendation_label = QLabel("")
+        self.recommendation_label.setObjectName("MidiTransposeAdvice")
+        self.recommendation_label.setWordWrap(True)
+        form.addRow("移调建议", self.recommendation_label)
 
         self.bpm_spin = QSpinBox()
         self.bpm_spin.setObjectName("MidiBpmSpin")
@@ -86,6 +100,38 @@ class MidiImportDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        self._updating_spin = False
+        self._follow_recommendation = True
+        self._advice = None
+        self._apply_recommendation()
+        self.profile_combo.currentIndexChanged.connect(self._apply_recommendation)
+
+    def _melody_notes(self):
+        track = recommend_track(self._song) if self._song.notes else None
+        notes = [
+            note for note in self._song.notes
+            if track is None or note.track == track
+        ]
+        return extract_melody(notes)
+
+    def _apply_recommendation(self):
+        profile = self.profile_combo.currentData() or "21key"
+        self._advice = recommend_transpose(self._melody_notes(), profile=profile)
+        advice = self._advice
+        self.recommendation_label.setText(
+            f"建议 {advice.semitones:+d} 半音"
+            f"（折八度 {advice.fold_count}，黑键 {advice.black_key_count}，"
+            f"走向破坏 {advice.contour_breaks}）。可以直接改上面的移调。"
+        )
+        if self._follow_recommendation:
+            self._updating_spin = True
+            self.transpose_spin.setValue(advice.semitones)
+            self._updating_spin = False
+
+    def _on_transpose_edited(self, _value):
+        if getattr(self, "_updating_spin", True):
+            return
+        self._follow_recommendation = False
 
     def options(self) -> AdaptOptions:
         return AdaptOptions(
