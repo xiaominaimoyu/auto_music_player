@@ -20,6 +20,7 @@ from core.event_logger import configure_event_logger
 from core.event_player import EventPlayer
 from core.humanize import HumanizeParams
 from core.keyboard_driver import KeyboardDriver
+from core.timing import timing_config
 from core.keymap import KeyMap
 from core.play_logger import PlayLogger
 from core.player import Player
@@ -241,6 +242,7 @@ def main():
     )
     profile = resolve_profile(profiles, app_cfg.get("active_profile"))
     # 修饰键与音键的间隔:配置缺失时回落到驱动默认值
+    timing = timing_config(player_cfg)
     driver = KeyboardDriver(
         settle_ms=float(
             player_cfg.get("modifier_settle_ms", KeyboardDriver.DEFAULT_SETTLE_MS)
@@ -250,6 +252,7 @@ def main():
                 "modifier_release_ms", KeyboardDriver.DEFAULT_RELEASE_SETTLE_MS
             )
         ),
+        batch_chords=timing.batch_chords,
     )
     # 真人化节奏参数:从 config.yaml 读取,默认启用
     humanize_cfg = player_cfg.get("humanize") or {}
@@ -273,12 +276,15 @@ def main():
         latency_compensation_ms=float(player_cfg.get("latency_compensation_ms", 0)),
         humanize=humanize_params,
         event_logger=event_logger,
+        precise_wait=timing.precise_wait,
+        additive_gap=timing.additive_gap,
     )
     # 事件演奏器(M4):三角洲档位走编译器 + EventPlayer,与默认 Player 共用同一驱动
     event_player = EventPlayer(
         driver=driver,
         latency_compensation_ms=float(player_cfg.get("latency_compensation_ms", 0)),
         logger=event_logger,
+        precise_wait=timing.precise_wait,
     )
     # 进程退出兜底:任何退出路径(atexit)都停止演奏并释放全部按键,防止键卡死
     atexit.register(player.shutdown)

@@ -18,6 +18,7 @@ import time
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.event_logger import NoteEvent
+from core.timing import high_resolution_period, wait_until
 
 _INTERRUPT_MODES = ("pause", "abort")
 
@@ -29,11 +30,13 @@ class EventPlayer(QObject):
     aborted = pyqtSignal(str)            # 不可恢复中止: 原因
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, driver, latency_compensation_ms=0, parent=None, *, logger=None):
+    def __init__(self, driver, latency_compensation_ms=0, parent=None, *, logger=None,
+                 precise_wait=True):
         super().__init__(parent)
         self._driver = driver
         self._logger = logger
         self.latency_compensation_ms = max(0.0, float(latency_compensation_ms))
+        self._precise_wait = bool(precise_wait)
         self._stop_event = threading.Event()
         self._thread = None
         self._force_abort = False
@@ -298,46 +301,47 @@ class EventPlayer(QObject):
         )
         t0 = time.perf_counter() - base_ms / 1000.0
         try:
-            for i in range(start_index, event_total):
-                if self._stop_event.is_set():
-                    break
-                e = events[i]
-                wait_s = t0 + e.t_ms / 1000.0 - comp_s - time.perf_counter()
-                if wait_s > 0:
-                    if self._stop_event.wait(wait_s):
+            with high_resolution_period(1):
+                for i in range(start_index, event_total):
+                    if self._stop_event.is_set():
+                        break
+                    e = events[i]
+                    if wait_until(
+                        self._stop_event,
+                        t0 + e.t_ms / 1000.0 - comp_s,
+                        precise=self._precise_wait,
+                    ):
                         break  # 停止信号在事件到达前到来:断点留在 i
-                elif self._stop_event.is_set():
-                    break
-                current_event = e
-                self._dispatch(e)
-                if log_started:
-                    self._logger.log_env(
-                        "playback_pipeline",
-                        stage="event_dispatched",
-                        event_index=i,
-                        device=e.device,
-                        key=e.key,
-                        action=e.action,
-                        source_index=e.source_index,
-                    )
-                done = i + 1
-                if tagged:
-                    if e.source_end and e.source_index is not None:
-                        self._log_source_note(
-                            e.source_index,
-                            e,
-                            t0,
-                            source_notes,
-                            source_keys,
-                            success=True,
+                    current_event = e
+                    self._dispatch(e)
+                    if log_started:
+                        self._logger.log_env(
+                            "playback_pipeline",
+                            stage="event_dispatched",
+                            event_index=i,
+                            device=e.device,
+                            key=e.key,
+                            action=e.action,
+                            source_index=e.source_index,
                         )
-                        logged_sources.add(e.source_index)
-                        resume_source_index = max(resume_source_index, e.source_index + 1)
-                        resume_source_index = min(resume_source_index, total)
-                        self._resume_source_index = resume_source_index
-                        self.progress.emit(resume_source_index, total)
-                else:
-                    self.progress.emit(done, total)
+                    done = i + 1
+                    if tagged:
+                        if e.source_end and e.source_index is not None:
+                            self._log_source_note(
+                                e.source_index,
+                                e,
+                                t0,
+                                source_notes,
+                                source_keys,
+                                success=True,
+                            )
+                            logged_sources.add(e.source_index)
+                            resume_source_index = max(resume_source_index, e.source_index + 1)
+                            resume_source_index = min(resume_source_index, total)
+                            self._resume_source_index = resume_source_index
+                            self.progress.emit(resume_source_index, total)
+                    else:
+                        self.progress.emit(done, total)
             if self._stop_event.is_set():
                 # 停止 = pause / abort,互斥于 finished(不发 finished)
                 if self._force_abort or interrupt_mode == "abort":

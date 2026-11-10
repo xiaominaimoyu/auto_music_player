@@ -115,6 +115,23 @@ class TestBuildEventPlan(unittest.TestCase):
         build_event_plan(notes, _delta(), "free_play", **KW)
         self.assertEqual(notes, before)
 
+    def test_free_play_gap_floor_does_not_stretch_eighths(self):
+        """场景把 gap 抬到 20ms 后，八分音符的起音间隔仍是 250ms。"""
+        notes = [
+            {"notes": ["mid_1"], "dur": 0.5},
+            {"notes": ["high_3"], "dur": 0.5},
+            {"notes": ["mid_2"], "dur": 0.5},
+            {"notes": ["low_1"], "dur": 0.5},
+        ]
+        plan, degs = build_event_plan(notes, _delta(), "free_play", bpm=120,
+                                      settle_ms=30.0, release_settle_ms=20.0,
+                                      hold_ratio=1.0, gap_ms=0.0)
+        downs = [e.t_ms for e in plan.events if e.device == "kb" and e.action == "down"]
+        intervals = [b - a for a, b in zip(downs, downs[1:])]
+        for interval in intervals:
+            self.assertAlmostEqual(interval, 250.0, places=2)
+        self.assertFalse(any(item.reason == "PREPRESS_DELAY" for item in degs))
+
     def test_free_play_events_have_no_submit(self):
         plan, _ = build_event_plan([{"notes": ["mid_1"], "dur": 0.01}],
                                    _delta(), "free_play", **KW)
