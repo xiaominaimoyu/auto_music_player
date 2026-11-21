@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "version": "1.5.2",
-  "sequence": 152,
+  "version": "2.6",
+  "sequence": 260,
   "min_supported": "1.4.2",
   "urls": [
-    "https://gitee.com/muming04yue/auto_music_player/releases/download/v1.5.2/AutoMusicPlayer.exe",
-    "https://github.com/xiaominaimoyu/auto_music_player/releases/download/v1.5.2/AutoMusicPlayer.exe"
+    "https://gitee.com/muming04yue/auto_music_player/releases/download/v2.6/AutoMusicPlayer.exe",
+    "https://github.com/xiaominaimoyu/auto_music_player/releases/download/v2.6/AutoMusicPlayer.exe"
   ],
   "size": 40439134,
   "sha256": "8559049a39434e068ed591a5b47cef3e530051300456bab28dcd1d72ee834a58",
