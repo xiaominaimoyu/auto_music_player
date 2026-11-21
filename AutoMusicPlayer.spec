@@ -17,7 +17,8 @@ check_versions(SPECPATH)
 from core.version import APP_VERSION
 from PyInstaller.utils.win32 import versioninfo
 
-windows_version = tuple(int(part) for part in APP_VERSION.split(".")) + (0,)
+windows_version = tuple(int(part) for part in APP_VERSION.split("."))
+windows_version = (windows_version + (0, 0, 0, 0))[:4]
 windows_version_info = versioninfo.VSVersionInfo(
     ffi=versioninfo.FixedFileInfo(
         filevers=windows_version, prodvers=windows_version,
