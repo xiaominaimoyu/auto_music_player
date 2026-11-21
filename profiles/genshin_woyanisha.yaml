@@ -1,0 +1,31 @@
+# 原神 · 沃雅妮莎：高音与中音两排共 14 个直达键，不使用鼠标修饰键。
+
+id: genshin_woyanisha
+name: 沃雅妮莎
+group: 原神
+
+pitch_keys: [A, S, D, F, G, H, J]
+modifier_buttons: {}
+
+pitch_direct_overrides:
+  high_1: Q
+  high_2: W
+  high_3: E
+  high_4: R
+  high_5: T
+  high_6: Y
+  high_7: U
+  mid_1: A
+  mid_2: S
+  mid_3: D
+  mid_4: F
+  mid_5: G
+  mid_6: H
+  mid_7: J
+
+preview_instrument: 竖琴
+
+legacy_keymap:
+  high: [Q, W, E, R, T, Y, U]
+  mid: [A, S, D, F, G, H, J]
+  low: []

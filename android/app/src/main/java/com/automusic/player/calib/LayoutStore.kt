@@ -38,7 +38,7 @@ class LayoutFormatException(message: String) : IllegalArgumentException(message)
 
 /**
  * 标定布局存储:filesDir/layouts.json。
- * 首次启动自动生成鸣潮/原神两套默认预设(真机截图估算值)。
+ * 首次启动自动生成内置默认预设;沃雅妮莎触点由标定生成。
  * 支持把布局导出为可分享的 JSON 文本,并从 JSON 导入(校验后存为独立布局)。
  */
 class LayoutStore(context: Context) {
@@ -94,12 +94,23 @@ class LayoutStore(context: Context) {
     private fun load(): LayoutState {
         return try {
             if (file.exists()) {
-                decode(file.readText())
+                val loaded = decode(file.readText())
+                if (loaded.layouts.none { it.id == KeyPointMap.GAME_GENSHIN_WOYANISHA }) {
+                    val state = LayoutState(
+                        loaded.layouts + default(KeyPointMap.GAME_GENSHIN_WOYANISHA),
+                        loaded.activeId,
+                    )
+                    runCatching { write(state) }
+                    state
+                } else {
+                    loaded
+                }
             } else {
-                // 首次启动:写入鸣潮/原神/三角洲三套默认预设
+                // 首次启动:写入鸣潮/原神/沃雅妮莎/三角洲四套默认预设
                 val initial = listOf(
-                    default("wuthering"),
-                    default("genshin"),
+                    default(KeyPointMap.GAME_WUTHERING),
+                    default(KeyPointMap.GAME_GENSHIN),
+                    default(KeyPointMap.GAME_GENSHIN_WOYANISHA),
                     default(DeltaKeyPoint.GAME_DELTA),
                 )
                 val state = LayoutState(initial, initial.first().id)
@@ -185,7 +196,7 @@ class LayoutStore(context: Context) {
                 ?: throw LayoutFormatException("缺少 points 琴键坐标数据")
             val validNotes = when (gameType) {
                 DeltaKeyPoint.GAME_DELTA -> DeltaKeyPoint.KEY_POINTS.toSet()
-                else -> KeyPointMap.ALL_NOTES.toSet()
+                else -> KeyPointMap.notesFor(gameType).toSet()
             }
             val expectedCount = validNotes.size
             val points = LinkedHashMap<String, Pair<Float, Float>>()

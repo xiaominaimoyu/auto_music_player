@@ -251,6 +251,8 @@ def main():
         fallback_keymap=cfg.get("keymap"),
     )
     profile = resolve_profile(profiles, app_cfg.get("active_profile"))
+    if profile.legacy_keymap is not None:
+        keymap.replace(profile.legacy_keymap, allow_partial=True)
     # 修饰键与音键的间隔:配置缺失时回落到驱动默认值
     timing = timing_config(player_cfg)
     driver = KeyboardDriver(

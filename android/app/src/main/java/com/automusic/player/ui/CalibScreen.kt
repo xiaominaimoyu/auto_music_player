@@ -67,12 +67,11 @@ import com.automusic.player.ui.theme.Brand
 import com.automusic.player.ui.theme.Bg
 import com.automusic.player.ui.theme.Ink2
 import com.automusic.player.ui.theme.Ink3
-import com.automusic.player.ui.theme.StateError
 import com.automusic.player.ui.theme.StateSuccess
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** 标定页:导入游戏演奏界面截图 -> 依次点击 21 个琴键位 -> 归一化保存。 */
+/** 标定页:导入游戏演奏界面截图 -> 依次点击琴键位 -> 归一化保存。 */
 @Composable
 fun CalibScreen(container: AppContainer) {
     val context = LocalContext.current
@@ -81,15 +80,20 @@ fun CalibScreen(container: AppContainer) {
 
     var editingLayout by remember { mutableStateOf<KeyLayout?>(null) }
     var editingName by remember { mutableStateOf("") }
+    val gameType = editingLayout?.gameType ?: layoutState.active?.gameType ?: KeyPointMap.GAME_WUTHERING
+    val isDelta = gameType == DeltaKeyPoint.GAME_DELTA
+    val notes = if (isDelta) DeltaKeyPoint.KEY_POINTS else KeyPointMap.notesFor(gameType)
     var points by remember(editingLayout) {
         mutableStateOf<Map<String, Pair<Float, Float>>>(editingLayout?.points ?: emptyMap())
     }
-    var cursor by remember { mutableIntStateOf(0) }
+    var cursor by remember(gameType) { mutableIntStateOf(0) }
+    val currentNote = notes.getOrNull(cursor) ?: notes.last()
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var notice by remember { mutableStateOf<String?>(null) }
     var countdown by remember { mutableStateOf<Int?>(null) }
     var showNewDialog by remember { mutableStateOf(false) }
+    var showKeyLabels by remember { mutableStateOf(true) }
 
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -108,7 +112,7 @@ fun CalibScreen(container: AppContainer) {
             editingName = outcome.layout.name
             notice = buildString {
                 val keyCount = if (outcome.layout.gameType == DeltaKeyPoint.GAME_DELTA)
-                    DeltaKeyPoint.KEY_POINTS.size else KeyPointMap.ALL_NOTES.size
+                    DeltaKeyPoint.KEY_POINTS.size else KeyPointMap.notesFor(outcome.layout.gameType).size
                 append(
                     "已导入布局《${outcome.layout.name}》" +
                         "(${outcome.layout.points.size}/$keyCount 键)并设为激活"
@@ -120,11 +124,6 @@ fun CalibScreen(container: AppContainer) {
             notice = "导入失败:${e.message}"
         }
     }
-
-    val gameType = editingLayout?.gameType ?: layoutState.active?.gameType ?: KeyPointMap.GAME_WUTHERING
-    val isDelta = gameType == DeltaKeyPoint.GAME_DELTA
-    val notes = if (isDelta) DeltaKeyPoint.KEY_POINTS else KeyPointMap.ALL_NOTES
-    val currentNote = notes.getOrNull(cursor) ?: notes.last()
 
     Column(
         modifier = Modifier
@@ -208,7 +207,7 @@ fun CalibScreen(container: AppContainer) {
                             .fillMaxWidth()
                             .aspectRatio(bmp.width.toFloat() / bmp.height)
                             .onSizeChanged { canvasSize = it }
-                            .pointerInput(points) {
+                            .pointerInput(gameType, points, cursor) {
                                 detectTapGestures { offset ->
                                     val nx = (offset.x / size.width).coerceIn(0f, 1f)
                                     val ny = (offset.y / size.height).coerceIn(0f, 1f)
@@ -251,19 +250,46 @@ fun CalibScreen(container: AppContainer) {
                     Text("尚未导入截图", color = Ink3)
                 }
 
-                // 槽位选择
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    itemsIndexed(notes) { i, n ->
-                        FilterChip(
-                            selected = i == cursor,
-                            onClick = { cursor = i },
-                            label = {
-                                Text(
-                                    (if (points.containsKey(n)) "●" else "○") + n.replace("_", ""),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            },
+                if (!isDelta) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "点击琴键仅选择标定槽位",
+                            color = Ink2,
+                            style = MaterialTheme.typography.bodySmall,
                         )
+                        FilterChip(
+                            selected = showKeyLabels,
+                            onClick = { showKeyLabels = !showKeyLabels },
+                            label = { Text("电脑键位") },
+                        )
+                    }
+                    InstrumentKeybed(
+                        gameType = gameType,
+                        points = points,
+                        currentNote = currentNote,
+                        showKeyLabels = showKeyLabels,
+                        onSelect = { noteId ->
+                            cursor = notes.indexOf(noteId).coerceAtLeast(0)
+                        },
+                    )
+                } else {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        itemsIndexed(notes) { i, n ->
+                            FilterChip(
+                                selected = i == cursor,
+                                onClick = { cursor = i },
+                                label = {
+                                    Text(
+                                        (if (points.containsKey(n)) "●" else "○") + n.replace("_", ""),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
                 Text(
@@ -278,19 +304,41 @@ fun CalibScreen(container: AppContainer) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!isDelta) {
                 OutlinedButton(onClick = {
-                    val h1 = points["high_1"]
-                    val h7 = points["high_7"]
-                    val l1 = points["low_1"]
-                    val l7 = points["low_7"]
-                    if (h1 == null || h7 == null || l1 == null || l7 == null) {
-                        notice = "四角推算需先标定 高音1、高音7、低音1、低音7 四个角点"
-                        return@OutlinedButton
+                    if (gameType == KeyPointMap.GAME_GENSHIN_WOYANISHA) {
+                        val h1 = points["high_1"]
+                        val h7 = points["high_7"]
+                        val m1 = points["mid_1"]
+                        val m7 = points["mid_7"]
+                        if (h1 == null || h7 == null || m1 == null || m7 == null) {
+                            notice = "两排四角推算需先标定 高音1、高音7、中音1、中音7 四个角点"
+                            return@OutlinedButton
+                        }
+                        val grid = KeyPointMap.deriveGrid14(h1, h7, m1, m7)
+                        if (grid == null) {
+                            notice = "推算失败:每排左端点必须位于右端点左侧"
+                        } else {
+                            points = grid
+                            notice = "已按两排四角插值推算全部 14 点,请检查并微调"
+                        }
+                    } else {
+                        val h1 = points["high_1"]
+                        val h7 = points["high_7"]
+                        val l1 = points["low_1"]
+                        val l7 = points["low_7"]
+                        if (h1 == null || h7 == null || l1 == null || l7 == null) {
+                            notice = "四角推算需先标定 高音1、高音7、低音1、低音7 四个角点"
+                            return@OutlinedButton
+                        }
+                        KeyPointMap.deriveGrid(h1, h7, l1, l7)?.let { grid ->
+                            points = grid
+                            notice = "已按四角双线性插值推算全部 21 点,请检查并微调"
+                        }
                     }
-                    KeyPointMap.deriveGrid(h1, h7, l1, l7)?.let { grid ->
-                        points = grid
-                        notice = "已按四角双线性插值推算全部 21 点,请检查并微调"
-                    }
-                }) { Text("四角推算") }
+                }) {
+                    Text(
+                        if (gameType == KeyPointMap.GAME_GENSHIN_WOYANISHA) "两排四角推算" else "四角推算"
+                    )
+                }
             }
 
             OutlinedButton(onClick = {
@@ -376,19 +424,21 @@ fun CalibScreen(container: AppContainer) {
                     OutlinedTextField(value = newName, onValueChange = { newName = it },
                         label = { Text("显示名称") }, singleLine = true)
                     Text("游戏类型", color = Ink2, style = MaterialTheme.typography.labelSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        KeyPointMap.GAME_NAMES.forEach { (g, label) ->
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        itemsIndexed(KeyPointMap.GAME_NAMES.entries.toList()) { _, entry ->
                             FilterChip(
-                                selected = newGame == g,
-                                onClick = { newGame = g },
-                                label = { Text(label) },
+                                selected = newGame == entry.key,
+                                onClick = { newGame = entry.key },
+                                label = { Text(entry.value) },
                             )
                         }
-                        FilterChip(
-                            selected = newGame == DeltaKeyPoint.GAME_DELTA,
-                            onClick = { newGame = DeltaKeyPoint.GAME_DELTA },
-                            label = { Text("三角洲") },
-                        )
+                        item {
+                            FilterChip(
+                                selected = newGame == DeltaKeyPoint.GAME_DELTA,
+                                onClick = { newGame = DeltaKeyPoint.GAME_DELTA },
+                                label = { Text("三角洲") },
+                            )
+                        }
                     }
                 }
             },

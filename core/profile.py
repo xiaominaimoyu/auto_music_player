@@ -231,4 +231,34 @@ def ensure_profiles(base_dir: str = ".") -> str:
         bundled = os.path.join(getattr(sys, "_MEIPASS", base_dir), PROFILES_DIRNAME)
         if os.path.isdir(bundled) and not os.path.exists(target):
             shutil.copytree(bundled, target)
+        elif os.path.isdir(bundled) and os.path.isdir(target):
+            existing_ids = set()
+            for filename in os.listdir(target):
+                if not filename.lower().endswith((".yaml", ".yml")):
+                    continue
+                try:
+                    with open(os.path.join(target, filename), encoding="utf-8") as stream:
+                        data = yaml.safe_load(stream)
+                except (OSError, yaml.YAMLError):
+                    continue
+                if isinstance(data, dict) and data.get("id"):
+                    existing_ids.add(str(data["id"]))
+            for filename in sorted(os.listdir(bundled)):
+                if not filename.lower().endswith((".yaml", ".yml")):
+                    continue
+                source = os.path.join(bundled, filename)
+                destination = os.path.join(target, filename)
+                if not os.path.isfile(source) or os.path.exists(destination):
+                    continue
+                try:
+                    with open(source, encoding="utf-8") as stream:
+                        data = yaml.safe_load(stream)
+                except (OSError, yaml.YAMLError):
+                    data = None
+                profile_id = str(data.get("id") or "") if isinstance(data, dict) else ""
+                if profile_id and profile_id in existing_ids:
+                    continue
+                shutil.copy2(source, destination)
+                if profile_id:
+                    existing_ids.add(profile_id)
     return target

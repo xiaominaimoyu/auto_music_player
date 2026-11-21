@@ -50,9 +50,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.automusic.player.AppContainer
 import com.automusic.player.core.HumanizeParams
+import com.automusic.player.core.KeyPointMap
 import com.automusic.player.core.NoteCodec
 import com.automusic.player.core.ScreenMetrics
 import com.automusic.player.core.PlayerEngine
+import com.automusic.player.core.WoyanishaScore
 import com.automusic.player.core.delta.DeltaCompileParams
 import com.automusic.player.core.delta.DeltaKeyPoint
 import com.automusic.player.core.delta.DeltaLayout
@@ -178,10 +180,24 @@ fun PlayScreen(container: AppContainer) {
                 notice = "没有可用布局:请到「标定」页创建"
                 return@launch
             }
+            val isWoyanisha = layout.gameType == KeyPointMap.GAME_GENSHIN_WOYANISHA
+            if (isWoyanisha) {
+                val missing = KeyPointMap.WOYANISHA_NOTES.count { it !in layout.points }
+                if (missing > 0) {
+                    notice = "沃雅妮莎布局还缺 $missing 个触点:请先在「标定」页完成全部 14 个琴键"
+                    return@launch
+                }
+            }
             val notes = NoteCodec.decode(score.notesJson)
             if (notes.isEmpty()) {
                 notice = "乐谱为空:请回识别页重新保存"
                 return@launch
+            }
+            val projection = if (isWoyanisha) WoyanishaScore.project(notes) else null
+            val playbackNotes = projection?.notes ?: notes
+            if (projection != null) {
+                notice = "沃雅妮莎投影:${projection.raisedNotes} 个低音升为中音," +
+                    "${projection.naturalizedElements} 个元素转为自然音,合并 ${projection.mergedNotes} 个重复音"
             }
             val (w, h) = ScreenMetrics.realSize(context)
 
@@ -216,7 +232,7 @@ fun PlayScreen(container: AppContainer) {
                 val svc = AmpAccessibilityService.instance
                 val target = container.targetPackage ?: svc?.lastExternalPackage
                 player.play(
-                    notes = notes,
+                    notes = playbackNotes,
                     bpm = bpm.toInt(),
                     holdRatio = holdRatio.toDouble(),
                     gapMs = gapMs.toLong(),

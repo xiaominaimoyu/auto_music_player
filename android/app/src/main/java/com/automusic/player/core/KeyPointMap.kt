@@ -10,10 +10,12 @@ object KeyPointMap {
 
     const val GAME_WUTHERING = "wuthering"
     const val GAME_GENSHIN = "genshin"
+    const val GAME_GENSHIN_WOYANISHA = "genshin_woyanisha"
 
     val GAME_NAMES = linkedMapOf(
         GAME_WUTHERING to "鸣潮",
         GAME_GENSHIN to "原神",
+        GAME_GENSHIN_WOYANISHA to "沃雅妮莎",
     )
 
     /** 全部 21 个 note_id,标定顺序:高音 1-7、中音 1-7、低音 1-7。 */
@@ -23,8 +25,22 @@ object KeyPointMap {
         }
     }
 
+    /** 沃雅妮莎 14 个 note_id,标定顺序:高音 1-7、中音 1-7。 */
+    val WOYANISHA_NOTES: List<String> = buildList {
+        for (octave in listOf("high", "mid")) {
+            for (i in 1..7) add("${octave}_$i")
+        }
+    }
+
+    fun notesFor(gameType: String): List<String> = when (gameType) {
+        GAME_GENSHIN_WOYANISHA -> WOYANISHA_NOTES
+        else -> ALL_NOTES
+    }
+
     /** note_id -> 归一化坐标 (x, y)。 */
     fun defaultLayout(game: String): Map<String, Pair<Float, Float>> {
+        if (game == GAME_GENSHIN_WOYANISHA) return emptyMap()
+
         val cols: FloatArray
         val rows: FloatArray
         when (game) {
@@ -83,6 +99,30 @@ object KeyPointMap {
                     val botY = low1.second + (low7.second - low1.second) * colT
                     val x = topX + (botX - topX) * rowT
                     val y = topY + (botY - topY) * rowT
+                    put("${octave}_$i", x to y)
+                }
+            }
+        }
+    }
+
+    /** 沃雅妮莎两排四角标定:每排独立在左右端点之间等距插值。 */
+    fun deriveGrid14(
+        high1: Pair<Float, Float>,
+        high7: Pair<Float, Float>,
+        mid1: Pair<Float, Float>,
+        mid7: Pair<Float, Float>,
+    ): Map<String, Pair<Float, Float>>? {
+        if (high1.first >= high7.first || mid1.first >= mid7.first) return null
+        return buildMap {
+            val rows = listOf(
+                Triple("high", high1, high7),
+                Triple("mid", mid1, mid7),
+            )
+            for ((octave, start, end) in rows) {
+                for (i in 1..7) {
+                    val t = (i - 1) / 6f
+                    val x = start.first + (end.first - start.first) * t
+                    val y = start.second + (end.second - start.second) * t
                     put("${octave}_$i", x to y)
                 }
             }

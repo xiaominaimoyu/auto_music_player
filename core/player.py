@@ -66,6 +66,11 @@ class Player(QObject):
     def is_playing(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def set_keymap(self, mapping: dict, *, allow_partial: bool = False) -> None:
+        if self.is_playing:
+            raise RuntimeError("演奏中不能切换键位映射")
+        self._keymap.replace(mapping, allow_partial=allow_partial)
+
     def set_dispatch_guard(self, guard):
         """设置每个和弦按下前执行的只读目标窗口保护回调。"""
         self._dispatch_guard = guard

@@ -38,24 +38,36 @@ from core.timing import TimingConfig, timing_config
 from core.transport import MIN_GAME_NOTE_MS, normalize_transport_preferences, prepare_score
 from core.window_monitor import FocusLockPolicy, ForegroundWatcher
 from core.windows_reliability import inspect_target_elevation
+from core.woyanisha import project_woyanisha_notes
 from gui.theme import BRAND, INK_2, INK_3, STATE_INFO
 from gui.widgets import AppDialog
 
 
 _WINDOW_PROFILE_HINTS = {
     "delta_force_harmonica": ("三角洲行动", "delta force"),
-    "default": ("鸣潮", "wuthering waves", "原神", "genshin impact"),
+    "default": ("鸣潮", "wuthering waves"),
+    "genshin": ("原神", "genshin impact"),
 }
 
 
-def suggested_profile_for_window(title: str) -> str | None:
-    """Return an unambiguous profile hint from a foreground game title."""
-
+def compatible_profiles_for_window(title: str) -> set[str]:
     normalized = str(title or "").casefold()
-    for profile_id, aliases in _WINDOW_PROFILE_HINTS.items():
-        if any(alias.casefold() in normalized for alias in aliases):
-            return profile_id
-    return None
+    if any(alias.casefold() in normalized for alias in _WINDOW_PROFILE_HINTS["delta_force_harmonica"]):
+        return {"delta_force_harmonica"}
+    if any(alias.casefold() in normalized for alias in _WINDOW_PROFILE_HINTS["genshin"]):
+        return {"default", "genshin_woyanisha"}
+    if any(alias.casefold() in normalized for alias in _WINDOW_PROFILE_HINTS["default"]):
+        return {"default"}
+    return set()
+
+
+def suggested_profile_for_window(title: str) -> str | None:
+    """保留既有默认档位建议；实际窗口校验使用完整兼容集合。"""
+
+    compatible = compatible_profiles_for_window(title)
+    if not compatible:
+        return None
+    return "delta_force_harmonica" if "delta_force_harmonica" in compatible else "default"
 
 
 def _is_midi_score(score: dict) -> bool:
@@ -588,7 +600,7 @@ class PlayerTab(QWidget):
         start, end = self._segment_bounds()
         transpose = self.transpose_spin.value() if self._use_event_path() else 0
         imported_timeline = _is_midi_score(score)
-        return prepare_score(
+        prepared = prepare_score(
             score["notes"],
             start_index=start,
             end_index=end,
@@ -597,6 +609,14 @@ class PlayerTab(QWidget):
             bpm=self.bpm_spin.value(),
             min_playable_ms=MIN_GAME_NOTE_MS if imported_timeline else 0.0,
         )
+        if getattr(self._profile, "id", None) == "genshin_woyanisha":
+            projection = project_woyanisha_notes(
+                prepared.notes,
+                source_index_offset=prepared.source_start,
+            )
+            prepared.notes = projection.notes
+            prepared.degradations.extend(projection.degradations)
+        return prepared
 
     def _load_transport_preferences(self, score):
         total = len(score["notes"])
@@ -1384,12 +1404,32 @@ class PlayerTab(QWidget):
         self.scenario_label.setVisible(vis)
         self.scenario_combo.setVisible(vis)
 
+    def _restore_profile_selection(self):
+        index = self.profile_combo.findData(getattr(self._profile, "id", None))
+        if index >= 0:
+            self.profile_combo.blockSignals(True)
+            self.profile_combo.setCurrentIndex(index)
+            self.profile_combo.blockSignals(False)
+
     def _on_profile_change(self, index):
+        timer = getattr(self, "_countdown_timer", None)
+        if self._real_playback_active() or (timer is not None and timer.isActive()):
+            self._restore_profile_selection()
+            self.progress_state.setText("演奏、练习或倒计时中，不能切换游戏档位")
+            return
         pid = self.profile_combo.itemData(index)
         if pid is None:
             return
         self._stop_preview()
-        self._profile = resolve_profile(self._profiles, pid)
+        profile = resolve_profile(self._profiles, pid)
+        try:
+            if profile.legacy_keymap is not None:
+                self._player.set_keymap(profile.legacy_keymap, allow_partial=True)
+        except (RuntimeError, ValueError) as exc:
+            self._restore_profile_selection()
+            self.progress_state.setText(f"档位切换失败: {exc}")
+            return
+        self._profile = profile
         # 每个档位有自己的默认试听音色(三角洲=口琴,默认=竖琴)
         self._apply_preview_defaults()
 
@@ -1640,14 +1680,13 @@ class PlayerTab(QWidget):
             )
             self.progress_state.setText("未启动：目标窗口不匹配")
             return False
-        suggested_profile = suggested_profile_for_window(title)
+        compatible_profiles = compatible_profiles_for_window(title)
         current_profile = getattr(self._profile, "id", None)
-        if suggested_profile and current_profile != suggested_profile:
-            expected = next(
-                (profile for profile in self._profiles if profile.id == suggested_profile),
-                None,
-            )
-            expected_name = expected.name if expected is not None else suggested_profile
+        if compatible_profiles and current_profile not in compatible_profiles:
+            expected_names = [
+                profile.name for profile in self._profiles if profile.id in compatible_profiles
+            ]
+            expected_name = " / ".join(expected_names) or " / ".join(sorted(compatible_profiles))
             current_name = getattr(self._profile, "name", current_profile or "未选择")
             AppDialog.show_warning(
                 self,
